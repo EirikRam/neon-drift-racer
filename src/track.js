@@ -1,12 +1,19 @@
 import { clamp, createVec2 } from "./math.js";
 
 const TWO_PI = Math.PI * 2;
+const DISTRICTS = [
+  { id: "beach", name: "Beach Causeway", startT: 0.0, endT: 0.25 },
+  { id: "downtown", name: "Downtown Grid", startT: 0.25, endT: 0.5 },
+  { id: "neon", name: "Neon Alley", startT: 0.5, endT: 0.75 },
+  { id: "harbor", name: "Harbor Run", startT: 0.75, endT: 1.0 },
+];
 
 function generateCenterline() {
   const points = [];
-  const pointCount = 96;
-  const radiusX = 520;
-  const radiusY = 320;
+  const pointCount = 420;
+  const radiusX = 980;
+  const radiusY = 640;
+  const blendWidth = 0.06;
 
   for (let i = 0; i < pointCount; i += 1) {
     const t = i / pointCount;
@@ -16,13 +23,59 @@ function generateCenterline() {
 
     const baseX = cos * radiusX;
     const baseY = sin * radiusY;
+    const normal = { x: cos, y: sin };
+    const tangent = { x: -sin, y: cos };
 
-    const wobble =
-      Math.sin(angle * 3) * 32 +
-      Math.sin(angle * 5 + 1.2) * 18 +
-      Math.sin(angle * 9 - 0.4) * 10;
+    const beach = districtWeight(t, DISTRICTS[0], blendWidth);
+    const downtown = districtWeight(t, DISTRICTS[1], blendWidth);
+    const neon = districtWeight(t, DISTRICTS[2], blendWidth);
+    const harbor = districtWeight(t, DISTRICTS[3], blendWidth);
 
-    points.push(createVec2(baseX + cos * wobble, baseY + sin * wobble));
+    const beachOffset = {
+      n:
+        Math.sin(t * TWO_PI * 1.2) * 40 +
+        Math.sin(t * TWO_PI * 0.5 + 0.8) * 28,
+      t: Math.sin(t * TWO_PI * 0.7 + 0.3) * 16,
+    };
+    const downtownOffset = {
+      n:
+        Math.sin(t * TWO_PI * 2.4 + 0.4) * 22 +
+        Math.sin(t * TWO_PI * 6.2 + 1.1) * 14,
+      t: Math.sin(t * TWO_PI * 1.8 + 0.9) * 14,
+    };
+    const neonOffset = {
+      n:
+        Math.sin(t * TWO_PI * 7.6 + 0.2) * 16 +
+        Math.sin(t * TWO_PI * 11.1 + 1.4) * 10,
+      t: Math.sin(t * TWO_PI * 5.8 + 0.7) * 10,
+    };
+    const harborStraight =
+      smoothstep(0.78, 0.84, t) * (1 - smoothstep(0.9, 0.96, t));
+    const harborOffset = {
+      n:
+        (Math.sin(t * TWO_PI * 1.1 + 0.6) * 26 +
+          Math.sin(t * TWO_PI * 2.2 + 1.3) * 16) *
+        (1 - harborStraight * 0.5),
+      t: Math.sin(t * TWO_PI * 0.5 + 2.1) * 32,
+    };
+
+    const offsetN =
+      beachOffset.n * beach +
+      downtownOffset.n * downtown +
+      neonOffset.n * neon +
+      harborOffset.n * harbor;
+    const offsetT =
+      beachOffset.t * beach +
+      downtownOffset.t * downtown +
+      neonOffset.t * neon +
+      harborOffset.t * harbor;
+
+    points.push(
+      createVec2(
+        baseX + normal.x * offsetN + tangent.x * offsetT,
+        baseY + normal.y * offsetN + tangent.y * offsetT,
+      ),
+    );
   }
 
   return points;
@@ -74,9 +127,10 @@ function buildBoundaries(points, width) {
 }
 
 class Track {
-  constructor(centerline, width) {
+  constructor(centerline, width, districts = []) {
     this.centerline = centerline;
     this.width = width;
+    this.districts = districts;
 
     const data = buildSegmentData(centerline);
     this.segmentLengths = data.segmentLengths;
@@ -175,6 +229,22 @@ class Track {
   getBoundaries() {
     return { inner: this.innerBoundary, outer: this.outerBoundary };
   }
+
+  getDistrictAtProgress(progress) {
+    const t = ((progress % 1) + 1) % 1;
+    for (let i = 0; i < this.districts.length; i += 1) {
+      const district = this.districts[i];
+      if (t >= district.startT && t < district.endT) {
+        return district;
+      }
+    }
+    return this.districts[0] || null;
+  }
+
+  getDistrictName(progress) {
+    const district = this.getDistrictAtProgress(progress);
+    return district ? district.name : "Unknown";
+  }
 }
 
 function safeNormalize(x, y) {
@@ -188,7 +258,35 @@ function safeNormalize(x, y) {
 export function createTrack() {
   const centerline = generateCenterline();
   const width = 120;
-  return new Track(centerline, width);
+  return new Track(centerline, width, DISTRICTS);
 }
 
 export const track = createTrack();
+
+export function getSkylineKeyForDistrictId(districtId) {
+  switch (districtId) {
+    case "beach":
+      return "skyBeach";
+    case "downtown":
+      return "skyDowntown";
+    case "neon":
+      return "skyNeon";
+    case "harbor":
+      return "skyHarbor";
+    default:
+      return "skyBeach";
+  }
+}
+
+function smoothstep(edge0, edge1, value) {
+  const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function districtWeight(t, district, blendWidth) {
+  const start = district.startT;
+  const end = district.endT;
+  const inStart = smoothstep(start, start + blendWidth, t);
+  const outEnd = smoothstep(end - blendWidth, end, t);
+  return inStart * (1 - outEnd);
+}

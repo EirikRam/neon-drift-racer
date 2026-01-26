@@ -31,6 +31,9 @@ export function renderHUD(ctx, hudState) {
     propCount,
     cameraX,
     cameraY,
+    showTrackDebug,
+    districtName,
+    skylineInfo,
     boostActive,
     boostTimer,
     boostDuration,
@@ -93,6 +96,32 @@ export function renderHUD(ctx, hudState) {
         ? boostY + 52
         : boostY + 34,
   );
+  if (showTrackDebug && districtName) {
+    ctx.fillText(
+      `District: ${districtName}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 88 : 70)
+        : showPropDebug
+          ? boostY + 70
+          : boostY + 52,
+    );
+  }
+  if (showTrackDebug && skylineInfo?.currentKey) {
+    const nextLabel = skylineInfo.nextKey ? ` -> ${skylineInfo.nextKey}` : "";
+    const fadeLabel = skylineInfo.nextKey
+      ? ` (${skylineInfo.fadeAlpha.toFixed(2)})`
+      : "";
+    ctx.fillText(
+      `Skyline: ${skylineInfo.currentKey}${nextLabel}${fadeLabel}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 106 : 88)
+        : showPropDebug
+          ? boostY + 88
+          : boostY + 70,
+    );
+  }
   ctx.restore();
 }
 

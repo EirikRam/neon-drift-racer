@@ -1,7 +1,7 @@
 import { isDown, wasPressed, endFrame } from "./input.js";
 import { createVec2, clamp, lerp } from "./math.js";
 import { ParticlePool } from "./particles.js";
-import { track } from "./track.js";
+import { track, getSkylineKeyForDistrictId } from "./track.js";
 import { loadAssets } from "./assets.js";
 import { generateProps } from "./props.js";
 import { renderHUD, renderHelpOverlay } from "./ui.js";
@@ -9,6 +9,7 @@ import { generateBoostPads, updateBoostPads } from "./boostpads.js";
 import { createScoreState, resetRun, updateScore, registerNearMiss, SCORE } from "./score.js";
 import { drawCarSprite, CAR_RENDER_SIZE } from "./carRender.js";
 import { createTrafficSystem } from "./traffic.js";
+import { drawSkyline as drawSkylineLayer, drawSkylineFallback } from "./skyline.js";
 
 const VERSION = "v0.2.0";
 const FIXED_TIME_STEP = 1000 / 60;
@@ -136,6 +137,13 @@ const trafficState = {
   impactCooldown: 0,
   sparkCooldown: 0,
   carSprites: [],
+};
+
+const skylineState = {
+  currentKey: null,
+  nextKey: null,
+  fadeAlpha: 1,
+  fadeSpeed: 1.2,
 };
 
 const state = {
@@ -278,6 +286,7 @@ function updateFixed() {
 
   updateBoostState(dt);
   updateCarPhysics(dt);
+  updateSkylineState(dt);
   updateTraffic(dt);
   const impact = resolveTrackCollision();
   resolveTrafficInteractions(dt);
@@ -337,7 +346,20 @@ function render(alpha) {
 
   context.save();
   if (settings.showSkyline) {
-    drawSkyline(renderCamera);
+    const currentImage = assets ? assets[skylineState.currentKey] : null;
+    const nextImage = assets && skylineState.nextKey ? assets[skylineState.nextKey] : null;
+    const pixelScale = canvas.width / Math.max(1, state.width);
+    drawSkylineFallback(context);
+    drawSkylineLayer(context, renderCamera, currentImage, {
+      alpha: 1,
+      pixelScale,
+    });
+    if (nextImage) {
+      drawSkylineLayer(context, renderCamera, nextImage, {
+        alpha: skylineState.fadeAlpha,
+        pixelScale,
+      });
+    }
   }
   context.translate(state.width / 2 - renderCamera.x, state.height / 2 - renderCamera.y);
 
@@ -542,6 +564,40 @@ function updateTraffic(dt) {
 
 }
 
+function updateSkylineState(dt) {
+  if (!settings.showSkyline) {
+    return;
+  }
+
+  const progress = track.getProgressAlongTrack(car.position);
+  const district = track.getDistrictAtProgress(progress);
+  const desiredKey = getSkylineKeyForDistrictId(district?.id);
+
+  if (!skylineState.currentKey) {
+    skylineState.currentKey = desiredKey;
+    skylineState.nextKey = null;
+    skylineState.fadeAlpha = 1;
+    return;
+  }
+
+  if (desiredKey !== skylineState.currentKey && skylineState.nextKey !== desiredKey) {
+    skylineState.nextKey = desiredKey;
+    skylineState.fadeAlpha = 0;
+  }
+
+  if (skylineState.nextKey) {
+    skylineState.fadeAlpha = Math.min(
+      1,
+      skylineState.fadeAlpha + skylineState.fadeSpeed * dt,
+    );
+    if (skylineState.fadeAlpha >= 1) {
+      skylineState.currentKey = skylineState.nextKey;
+      skylineState.nextKey = null;
+      skylineState.fadeAlpha = 1;
+    }
+  }
+}
+
 function runDebugSafetyChecks() {
   const debugMode = settings.showTrackDebug || settings.showPropDebug;
   if (!debugMode) {
@@ -738,6 +794,16 @@ function drawHud(renderCamera) {
   const particleCount = particlePool.activeCount;
   const roadStatus = car.onRoad ? "On Road" : "Off Road";
   const propCount = props.length;
+  const districtName = settings.showTrackDebug
+    ? track.getDistrictName(track.getProgressAlongTrack(car.position))
+    : null;
+  const skylineInfo = settings.showTrackDebug
+    ? {
+        currentKey: skylineState.currentKey,
+        nextKey: skylineState.nextKey,
+        fadeAlpha: skylineState.fadeAlpha,
+      }
+    : null;
   const knockedCount =
     settings.showNearMissDebug && trafficState.system
       ? trafficState.system.cars.filter((npc) => npc.knockbackTimer > 0).length
@@ -762,6 +828,9 @@ function drawHud(renderCamera) {
     propCount,
     cameraX: renderCamera.x,
     cameraY: renderCamera.y,
+    showTrackDebug: settings.showTrackDebug,
+    districtName,
+    skylineInfo,
     boostActive: car.boostActive,
     boostTimer: car.boostTimer,
     boostDuration: car.boostDuration,
@@ -775,33 +844,6 @@ function drawHud(renderCamera) {
 function lerpAngle(a, b, t) {
   const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
   return a + delta * t;
-}
-
-function drawSkyline(renderCamera) {
-  if (!assets) {
-    return;
-  }
-
-  const skyline = assets.skyline;
-  const parallax = 0.2;
-  const skyTop = 0;
-  const skyHeight = state.height * 0.55;
-  const skylineY = state.height * 0.2;
-
-  context.save();
-  const gradient = context.createLinearGradient(0, skyTop, 0, skyHeight);
-  gradient.addColorStop(0, "#0c0b2f");
-  gradient.addColorStop(1, "#05060b");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, state.width, skyHeight);
-
-  const offsetX = -(renderCamera.x * parallax) % skyline.width;
-  const drawY = skylineY;
-  const startX = offsetX - skyline.width;
-  for (let x = startX; x < state.width + skyline.width; x += skyline.width) {
-    context.drawImage(skyline, x, drawY);
-  }
-  context.restore();
 }
 
 function smallestAngleBetween(a, b) {
@@ -1259,6 +1301,18 @@ function drawTrackDebug(renderCarPos) {
   context.closePath();
   context.stroke();
 
+  if (track.districts?.length) {
+    const colors = ["#66e1ff", "#7aff9c", "#ff7ad9", "#ffd26f"];
+    for (let i = 0; i < track.districts.length; i += 1) {
+      const district = track.districts[i];
+      const marker = track.getPointAtProgress(district.startT);
+      context.fillStyle = colors[i % colors.length];
+      context.beginPath();
+      context.arc(marker.point.x, marker.point.y, 6, 0, Math.PI * 2);
+      context.fill();
+    }
+  }
+
   context.strokeStyle = "rgba(255, 200, 100, 0.6)";
   context.beginPath();
   context.moveTo(inner[0].x, inner[0].y);
@@ -1379,8 +1433,11 @@ async function loadGameAssets() {
     npcMuscle: "assets/cars/npc_muscle.png",
     npcTaxi: "assets/cars/npc_taxi.png",
     npcBike: "assets/cars/npc_bike.png",
+    skyBeach: "assets/skylines/miami_beach_causeway_skyline.png",
+    skyDowntown: "assets/skylines/miami_downtown_grid_skyline.png",
+    skyNeon: "assets/skylines/miami_neon_alley_skyline.png",
+    skyHarbor: "assets/skylines/miami_harbor_run_skyline.png",
     asphalt: "assets/ashphalt_tile.png",
-    skyline: "assets/miami_skyline.png",
     viceCity: "assets/vice_city_neon_sign.png",
     palmTree: "assets/palm_tree_neon_sign.png",
     flamingo: "assets/flamingo_neon_sign.png",
