@@ -24,6 +24,7 @@ export function renderHUD(ctx, hudState) {
     trailRate,
     roadStatus,
     showPropDebug,
+    showCollisions,
     propCount,
     cameraX,
     cameraY,
@@ -43,13 +44,14 @@ export function renderHUD(ctx, hudState) {
   ctx.fillText(`Particles: ${particleCount}`, 16, 140);
   ctx.fillText(`Trail Rate: ${trailRate.toFixed(1)} / s`, 16, 158);
   ctx.fillText(`Road: ${roadStatus}`, 16, 176);
+  ctx.fillText(`Collisions: ${showCollisions ? "ON" : "OFF"}`, 16, 194);
   if (showPropDebug) {
-    ctx.fillText(`Props: ${propCount}`, 16, 194);
+    ctx.fillText(`Props: ${propCount}`, 16, 212);
   }
   ctx.fillText(
     `Camera: ${cameraX.toFixed(1)}, ${cameraY.toFixed(1)}`,
     16,
-    showPropDebug ? 212 : 194,
+    showPropDebug ? 230 : 212,
   );
   ctx.restore();
 }
@@ -77,6 +79,7 @@ export function renderHelpOverlay(ctx, uiState) {
     "Debug:",
     `  T – Track Debug    [${formatToggle(uiState.showTrackDebug)}]`,
     `  K – Prop Debug     [${formatToggle(uiState.showPropDebug)}]`,
+    `  J – Collisions     [${formatToggle(uiState.showCollisions)}]`,
   ];
 
   const padding = 16;

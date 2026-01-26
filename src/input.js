@@ -21,6 +21,7 @@ const SUPPORTED_KEYS = new Set([
   "KeyK",
   "Slash",
   "F1",
+  "KeyJ",
 ]);
 
 const down = new Set();

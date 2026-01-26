@@ -48,6 +48,15 @@ const PARTICLES = {
   sparkMinSpeed: 120,
 };
 
+const COLLISION = {
+  bounceScale: 1.8,
+  velocityDamping: 0.85,
+  minCorrection: 0.8,
+  impactScale: 0.002,
+  shakeScale: 6,
+  flashScale: 0.7,
+};
+
 const app = document.getElementById("app");
 const canvas = document.createElement("canvas");
 const context = canvas.getContext("2d");
@@ -68,7 +77,14 @@ const settings = {
   showMotionBlur: true,
   showTrackDebug: false,
   showPropDebug: false,
+  showCollisions: true,
   showHelp: false,
+};
+
+const impactState = {
+  shakeIntensity: 0,
+  shakeTime: 0,
+  flashAlpha: 0,
 };
 
 const particlePool = new ParticlePool(PARTICLES.maxCount);
@@ -185,12 +201,21 @@ function updateFixed() {
     settings.showPropDebug = !settings.showPropDebug;
   }
 
+  if (wasPressed("KeyJ")) {
+    settings.showCollisions = !settings.showCollisions;
+  }
+
   if (wasPressed("F1") || (wasPressed("Slash") && isDown("Shift"))) {
     settings.showHelp = !settings.showHelp;
   }
 
   updateCarPhysics(dt);
+  const impact = resolveTrackCollision();
+  updateImpactState(dt, impact);
   updateParticles(dt, wasPressed("Space"));
+  if (impact && settings.showParticles) {
+    spawnImpactSparks(impact);
+  }
 
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
@@ -220,6 +245,9 @@ function render(alpha) {
     x: lerp(camera.prevPosition.x, camera.position.x, alpha),
     y: lerp(camera.prevPosition.y, camera.position.y, alpha),
   };
+  const shakeOffset = getCameraShakeOffset();
+  renderCamera.x += shakeOffset.x;
+  renderCamera.y += shakeOffset.y;
 
   context.save();
   if (settings.showSkyline) {
@@ -265,6 +293,13 @@ function render(alpha) {
 
   context.restore();
 
+  if (impactState.flashAlpha > 0) {
+    context.save();
+    context.fillStyle = `rgba(255, 255, 255, ${impactState.flashAlpha.toFixed(3)})`;
+    context.fillRect(0, 0, state.width, state.height);
+    context.restore();
+  }
+
   drawHud(renderCamera);
   renderHelpOverlay(context, {
     showHelp: settings.showHelp,
@@ -276,6 +311,7 @@ function render(alpha) {
     showMotionBlur: settings.showMotionBlur,
     showTrackDebug: settings.showTrackDebug,
     showPropDebug: settings.showPropDebug,
+    showCollisions: settings.showCollisions,
   });
 }
 
@@ -433,6 +469,7 @@ function drawHud(renderCamera) {
     trailRate: particleState.trailRate,
     roadStatus,
     showPropDebug: settings.showPropDebug,
+    showCollisions: settings.showCollisions,
     propCount,
     cameraX: renderCamera.x,
     cameraY: renderCamera.y,
@@ -560,6 +597,98 @@ function updateCarPhysics(dt) {
       : 0;
 }
 
+function resolveTrackCollision() {
+  if (!settings.showCollisions) {
+    return null;
+  }
+
+  const closest = track.getClosestPoint(car.position);
+  const distance = closest.distance;
+  if (distance <= track.width) {
+    return null;
+  }
+
+  let normalX = car.position.x - closest.point.x;
+  let normalY = car.position.y - closest.point.y;
+  const normalLen = Math.hypot(normalX, normalY);
+
+  if (normalLen < 0.001) {
+    const nextIndex = (closest.segmentIndex + 1) % track.centerline.length;
+    const a = track.centerline[closest.segmentIndex];
+    const b = track.centerline[nextIndex];
+    const tx = b.x - a.x;
+    const ty = b.y - a.y;
+    const tLen = Math.hypot(tx, ty) || 1;
+    normalX = -ty / tLen;
+    normalY = tx / tLen;
+  } else {
+    normalX /= normalLen;
+    normalY /= normalLen;
+  }
+
+  const correction = distance - track.width;
+  if (correction > 0) {
+    car.position.x -= normalX * correction;
+    car.position.y -= normalY * correction;
+  }
+
+  const vn = car.vel.x * normalX + car.vel.y * normalY;
+  if (vn > 0) {
+    car.vel.x -= normalX * (COLLISION.bounceScale * vn);
+    car.vel.y -= normalY * (COLLISION.bounceScale * vn);
+  }
+
+  car.vel.x *= COLLISION.velocityDamping;
+  car.vel.y *= COLLISION.velocityDamping;
+
+  if (correction < COLLISION.minCorrection) {
+    return null;
+  }
+
+  const impactStrength = Math.min(
+    1,
+    Math.hypot(car.vel.x, car.vel.y) * COLLISION.impactScale +
+      correction * 0.01,
+  );
+
+  return {
+    position: { x: closest.point.x, y: closest.point.y },
+    normal: { x: normalX, y: normalY },
+    strength: impactStrength,
+  };
+}
+
+function updateImpactState(dt, impact) {
+  impactState.shakeIntensity *= Math.exp(-6 * dt);
+  impactState.shakeTime += dt;
+  impactState.flashAlpha = Math.max(0, impactState.flashAlpha - dt * 4.2);
+
+  if (!impact) {
+    return;
+  }
+
+  impactState.shakeIntensity = Math.min(
+    1,
+    impactState.shakeIntensity + impact.strength * COLLISION.shakeScale,
+  );
+  impactState.flashAlpha = Math.min(
+    0.7,
+    impactState.flashAlpha + impact.strength * COLLISION.flashScale,
+  );
+}
+
+function getCameraShakeOffset() {
+  const intensity = impactState.shakeIntensity;
+  if (intensity < 0.001) {
+    return { x: 0, y: 0 };
+  }
+
+  const t = impactState.shakeTime;
+  const shakeX = Math.sin(t * 18.3) * intensity * 6;
+  const shakeY = Math.cos(t * 22.7) * intensity * 4;
+  return { x: shakeX, y: shakeY };
+}
+
 function updateParticles(dt, handbrakePressed) {
   particlePool.update(dt);
 
@@ -656,6 +785,27 @@ function updateParticles(dt, handbrakePressed) {
       size: PARTICLES.sparkSize * (0.8 + Math.random() * 0.6),
       color: "rgb(255, 242, 200)",
       alpha: PARTICLES.sparkAlpha,
+    });
+  }
+}
+
+function spawnImpactSparks(impact) {
+  const count = Math.floor(6 + impact.strength * 18);
+  for (let i = 0; i < count; i += 1) {
+    const spread = (Math.random() - 0.5) * 0.7;
+    const dirX = -impact.normal.x + impact.normal.y * spread;
+    const dirY = -impact.normal.y - impact.normal.x * spread;
+    const speed = 160 + Math.random() * 160;
+
+    particlePool.spawn({
+      x: impact.position.x + impact.normal.x * 6,
+      y: impact.position.y + impact.normal.y * 6,
+      vx: dirX * speed,
+      vy: dirY * speed,
+      life: 0.18 + Math.random() * 0.12,
+      size: 2.2 + Math.random() * 1.8,
+      color: "rgb(255, 242, 200)",
+      alpha: 0.85,
     });
   }
 }
