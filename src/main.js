@@ -1,5 +1,9 @@
 import { isDown, wasPressed, endFrame } from "./input.js";
 import { createVec2, clamp, lerp } from "./math.js";
+import { ParticlePool } from "./particles.js";
+import { track } from "./track.js";
+import { loadAssets } from "./assets.js";
+import { generateProps } from "./props.js";
 
 const VERSION = "v0.2.0";
 const FIXED_TIME_STEP = 1000 / 60;
@@ -18,6 +22,29 @@ const PHYSICS = {
   forwardDrag: 1.2,
   minDriftSpeed: 80,
   driftThreshold: Math.PI / 8,
+  offRoadDrag: 3,
+  offRoadSteerScale: 0.82,
+};
+
+const PARTICLES = {
+  maxCount: 520,
+  trailSpeedThreshold: 60,
+  trailRateBase: 6,
+  trailRateSpeed: 0.05,
+  trailRateDrift: 18,
+  trailHandbrakeBoost: 1.5,
+  trailLife: 1.6,
+  trailSize: 6,
+  trailAlpha: 0.55,
+  trailRearOffset: 20,
+  sparkRateBase: 30,
+  sparkRateDrift: 45,
+  sparkLife: 0.25,
+  sparkSize: 3,
+  sparkAlpha: 0.9,
+  sparkSpeed: 220,
+  sparkRearOffset: 18,
+  sparkMinSpeed: 120,
 };
 
 const app = document.getElementById("app");
@@ -26,9 +53,26 @@ const context = canvas.getContext("2d");
 
 app.appendChild(canvas);
 
-const carImage = new Image();
+let assets = null;
 let carImageReady = false;
+let roadPattern = null;
+let props = [];
 let useSprite = true;
+let particlesEnabled = true;
+let glowEnabled = true;
+let motionBlurEnabled = true;
+let trackDebugEnabled = false;
+let skylineEnabled = true;
+let neonPropsEnabled = true;
+let laneMarksEnabled = true;
+let propDebugEnabled = false;
+
+const particlePool = new ParticlePool(PARTICLES.maxCount);
+const particleState = {
+  trailAccumulator: 0,
+  sparkAccumulator: 0,
+  trailRate: 0,
+};
 
 const state = {
   width: 0,
@@ -54,6 +98,7 @@ const car = {
   driftActive: false,
   speed: 0,
   velAngle: 0,
+  onRoad: true,
 };
 
 const camera = {
@@ -104,7 +149,40 @@ function updateFixed() {
     useSprite = !useSprite;
   }
 
+  if (wasPressed("KeyP")) {
+    particlesEnabled = !particlesEnabled;
+  }
+
+  if (wasPressed("KeyG")) {
+    glowEnabled = !glowEnabled;
+  }
+
+  if (wasPressed("KeyM")) {
+    motionBlurEnabled = !motionBlurEnabled;
+  }
+
+  if (wasPressed("KeyT")) {
+    trackDebugEnabled = !trackDebugEnabled;
+  }
+
+  if (wasPressed("KeyH")) {
+    skylineEnabled = !skylineEnabled;
+  }
+
+  if (wasPressed("KeyN")) {
+    neonPropsEnabled = !neonPropsEnabled;
+  }
+
+  if (wasPressed("KeyL")) {
+    laneMarksEnabled = !laneMarksEnabled;
+  }
+
+  if (wasPressed("KeyK")) {
+    propDebugEnabled = !propDebugEnabled;
+  }
+
   updateCarPhysics(dt);
+  updateParticles(dt, wasPressed("Space"));
 
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
@@ -112,7 +190,18 @@ function updateFixed() {
 }
 
 function render(alpha) {
-  context.clearRect(0, 0, state.width, state.height);
+  if (motionBlurEnabled) {
+    context.save();
+    context.fillStyle = "rgba(5, 6, 11, 0.16)";
+    context.fillRect(0, 0, state.width, state.height);
+    context.restore();
+  } else {
+    context.clearRect(0, 0, state.width, state.height);
+    context.save();
+    context.fillStyle = "#05060b";
+    context.fillRect(0, 0, state.width, state.height);
+    context.restore();
+  }
 
   const renderCarPos = {
     x: lerp(car.prevPosition.x, car.position.x, alpha),
@@ -125,15 +214,16 @@ function render(alpha) {
   };
 
   context.save();
-  context.fillStyle = "#05060b";
-  context.fillRect(0, 0, state.width, state.height);
-  context.restore();
-
-  context.save();
+  if (skylineEnabled) {
+    drawSkyline(renderCamera);
+  }
   context.translate(state.width / 2 - renderCamera.x, state.height / 2 - renderCamera.y);
 
   drawBackgroundGrid(renderCamera);
   drawTrack();
+  if (neonPropsEnabled) {
+    drawProps(props);
+  }
   if (useSprite) {
     drawCarSprite(renderCarPos, renderHeading);
   } else {
@@ -143,6 +233,27 @@ function render(alpha) {
     x: lerp(car.prevVel.x, car.vel.x, alpha),
     y: lerp(car.prevVel.y, car.vel.y, alpha),
   });
+  if (propDebugEnabled) {
+    drawPropDebug(props);
+  }
+
+  if (glowEnabled) {
+    context.save();
+    context.globalCompositeOperation = "lighter";
+    if (particlesEnabled) {
+      particlePool.render(context);
+    }
+    if (neonPropsEnabled) {
+      drawPropGlow(props);
+    }
+    context.restore();
+  } else if (particlesEnabled) {
+    particlePool.render(context);
+  }
+
+  if (trackDebugEnabled) {
+    drawTrackDebug(renderCarPos);
+  }
 
   context.restore();
 
@@ -180,30 +291,74 @@ function drawBackgroundGrid(cameraPos) {
 }
 
 function drawTrack() {
-  const centerX = 0;
-  const centerY = 0;
-  const radiusX = 520;
-  const radiusY = 320;
+  const points = track.centerline;
+  const boundaries = track.getBoundaries();
+  const inner = boundaries.inner;
+  const outer = boundaries.outer;
 
   context.save();
   context.beginPath();
-  context.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
-  context.strokeStyle = "#11141d";
-  context.lineWidth = 140;
+  context.moveTo(outer[0].x, outer[0].y);
+  for (let i = 1; i < outer.length; i += 1) {
+    context.lineTo(outer[i].x, outer[i].y);
+  }
+  for (let i = inner.length - 1; i >= 0; i -= 1) {
+    context.lineTo(inner[i].x, inner[i].y);
+  }
+  context.closePath();
+
+  context.lineJoin = "round";
   context.lineCap = "round";
+
+  context.save();
+  context.clip();
+  context.fillStyle = roadPattern || "#121722";
+  context.fillRect(-5000, -5000, 10000, 10000);
+  context.restore();
+
+  context.strokeStyle = "rgba(120, 140, 170, 0.35)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(outer[0].x, outer[0].y);
+  for (let i = 1; i < outer.length; i += 1) {
+    context.lineTo(outer[i].x, outer[i].y);
+  }
+  context.closePath();
   context.stroke();
 
-  context.strokeStyle = "rgba(0, 210, 255, 0.45)";
-  context.lineWidth = 4;
+  context.beginPath();
+  context.moveTo(inner[0].x, inner[0].y);
+  for (let i = 1; i < inner.length; i += 1) {
+    context.lineTo(inner[i].x, inner[i].y);
+  }
+  context.closePath();
   context.stroke();
+
+  if (laneMarksEnabled) {
+    context.save();
+    context.strokeStyle = "rgba(240, 250, 255, 0.35)";
+    context.lineWidth = 2;
+    context.setLineDash([18, 22]);
+    context.lineDashOffset = 0;
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      context.lineTo(points[i].x, points[i].y);
+    }
+    context.closePath();
+    context.stroke();
+    context.restore();
+  }
+
   context.restore();
 }
 
 function drawCarSprite(position, heading) {
-  if (!carImageReady) {
+  if (!carImageReady || !assets) {
     return;
   }
 
+  const carImage = assets.car;
   const spriteWidth = 64;
   const spriteHeight = (carImage.height / carImage.width) * spriteWidth;
   const rotationOffset = -Math.PI / 2;
@@ -243,6 +398,9 @@ function drawHud(renderCamera) {
   const headingDeg = ((car.heading * 180) / Math.PI + 360) % 360;
   const driftDeg = (car.driftAngle * 180) / Math.PI;
   const velDeg = ((car.velAngle * 180) / Math.PI + 360) % 360;
+  const particleCount = particlePool.activeCount;
+  const roadStatus = car.onRoad ? "On Road" : "Off Road";
+  const propCount = props.length;
 
   context.save();
   context.fillStyle = "rgba(207, 232, 255, 0.9)";
@@ -255,10 +413,20 @@ function drawHud(renderCamera) {
   context.fillText(`Vel Dir: ${velDeg.toFixed(1)}°`, 16, 86);
   context.fillText(`Drift: ${driftDeg.toFixed(1)}°`, 16, 104);
   context.fillText(`Drift Active: ${car.driftActive}`, 16, 122);
+  context.fillText(`Particles: ${particleCount}`, 16, 140);
+  context.fillText(
+    `Trail Rate: ${particleState.trailRate.toFixed(1)} / s`,
+    16,
+    158,
+  );
+  context.fillText(`Road: ${roadStatus}`, 16, 176);
+  if (propDebugEnabled) {
+    context.fillText(`Props: ${propCount}`, 16, 194);
+  }
   context.fillText(
     `Camera: ${renderCamera.x.toFixed(1)}, ${renderCamera.y.toFixed(1)}`,
     16,
-    140,
+    propDebugEnabled ? 212 : 194,
   );
   context.restore();
 }
@@ -266,6 +434,33 @@ function drawHud(renderCamera) {
 function lerpAngle(a, b, t) {
   const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
   return a + delta * t;
+}
+
+function drawSkyline(renderCamera) {
+  if (!assets) {
+    return;
+  }
+
+  const skyline = assets.skyline;
+  const parallax = 0.2;
+  const skyTop = 0;
+  const skyHeight = state.height * 0.55;
+  const skylineY = state.height * 0.2;
+
+  context.save();
+  const gradient = context.createLinearGradient(0, skyTop, 0, skyHeight);
+  gradient.addColorStop(0, "#0c0b2f");
+  gradient.addColorStop(1, "#05060b");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, state.width, skyHeight);
+
+  const offsetX = -(renderCamera.x * parallax) % skyline.width;
+  const drawY = skylineY;
+  const startX = offsetX - skyline.width;
+  for (let x = startX; x < state.width + skyline.width; x += skyline.width) {
+    context.drawImage(skyline, x, drawY);
+  }
+  context.restore();
 }
 
 function smallestAngleBetween(a, b) {
@@ -282,11 +477,15 @@ function updateCarPhysics(dt) {
   car.steerInput = clamp((steerRight ? 1 : 0) - (steerLeft ? 1 : 0), -1, 1);
   car.handbrake = isDown("Space");
 
+  const onRoad = track.isOnRoad(car.position);
+  car.onRoad = onRoad;
+
   const speed = Math.hypot(car.vel.x, car.vel.y);
   const speedNorm = clamp(speed / PHYSICS.maxSpeedForward, 0, 1);
   const steerRate = lerp(PHYSICS.steerRateMin, PHYSICS.steerRateMax, speedNorm);
 
-  car.heading += car.steerInput * steerRate * dt;
+  const steerScale = onRoad ? 1 : PHYSICS.offRoadSteerScale;
+  car.heading += car.steerInput * steerRate * steerScale * dt;
 
   const forwardDir = {
     x: Math.cos(car.heading),
@@ -336,6 +535,12 @@ function updateCarPhysics(dt) {
   car.vel.x = forwardDir.x * vf + rightDir.x * vl;
   car.vel.y = forwardDir.y * vf + rightDir.y * vl;
 
+  if (!onRoad) {
+    const offRoadDrag = Math.exp(-PHYSICS.offRoadDrag * dt);
+    car.vel.x *= offRoadDrag;
+    car.vel.y *= offRoadDrag;
+  }
+
   car.position.x += car.vel.x * dt;
   car.position.y += car.vel.y * dt;
 
@@ -345,6 +550,224 @@ function updateCarPhysics(dt) {
     car.speed > PHYSICS.minDriftSpeed
       ? smallestAngleBetween(car.heading, car.velAngle)
       : 0;
+}
+
+function updateParticles(dt, handbrakePressed) {
+  particlePool.update(dt);
+
+  if (!particlesEnabled) {
+    particleState.trailRate = 0;
+    return;
+  }
+
+  const speed = car.speed;
+  if (speed <= 0.1) {
+    particleState.trailRate = 0;
+    return;
+  }
+
+  const forwardDir = {
+    x: Math.cos(car.heading),
+    y: Math.sin(car.heading),
+  };
+  const rightDir = { x: -forwardDir.y, y: forwardDir.x };
+  const rearOffset = PARTICLES.trailRearOffset;
+  const baseX = car.position.x - forwardDir.x * rearOffset;
+  const baseY = car.position.y - forwardDir.y * rearOffset;
+
+  const driftFactor = clamp(
+    Math.abs(car.driftAngle) / (Math.PI / 2),
+    0,
+    1,
+  );
+  let trailRate =
+    PARTICLES.trailRateBase +
+    speed * PARTICLES.trailRateSpeed +
+    driftFactor * PARTICLES.trailRateDrift;
+
+  if (car.handbrake) {
+    trailRate *= PARTICLES.trailHandbrakeBoost;
+  }
+
+  if (handbrakePressed) {
+    particleState.trailAccumulator += 4;
+  }
+
+  particleState.trailRate = trailRate;
+
+  if (speed > PARTICLES.trailSpeedThreshold) {
+    particleState.trailAccumulator += trailRate * dt;
+    while (particleState.trailAccumulator >= 1) {
+      particleState.trailAccumulator -= 1;
+
+      const colorMix = Math.random();
+      const r = Math.round(80 + 140 * colorMix);
+      const g = Math.round(220 + 20 * (1 - colorMix));
+      const b = Math.round(255 - 100 * colorMix);
+
+      particlePool.spawn({
+        x: baseX + (Math.random() - 0.5) * 6,
+        y: baseY + (Math.random() - 0.5) * 6,
+        vx: -forwardDir.x * 12 + rightDir.x * (Math.random() - 0.5) * 8,
+        vy: -forwardDir.y * 12 + rightDir.y * (Math.random() - 0.5) * 8,
+        life: PARTICLES.trailLife * (0.85 + Math.random() * 0.3),
+        size: PARTICLES.trailSize * (0.8 + Math.random() * 0.5),
+        color: `rgb(${r}, ${g}, ${b})`,
+        alpha: PARTICLES.trailAlpha,
+      });
+    }
+  }
+
+  if (!car.driftActive || speed < PARTICLES.sparkMinSpeed) {
+    return;
+  }
+
+  let sparkRate =
+    PARTICLES.sparkRateBase + driftFactor * PARTICLES.sparkRateDrift;
+  if (car.handbrake) {
+    sparkRate *= 1.2;
+  }
+
+  particleState.sparkAccumulator += sparkRate * dt;
+  while (particleState.sparkAccumulator >= 1) {
+    particleState.sparkAccumulator -= 1;
+
+    const spread = (Math.random() - 0.5) * 1.2;
+    const sparkDir = {
+      x: -forwardDir.x + rightDir.x * spread,
+      y: -forwardDir.y + rightDir.y * spread,
+    };
+    const sparkSpeed = PARTICLES.sparkSpeed + speed * 0.4;
+
+    particlePool.spawn({
+      x: car.position.x - forwardDir.x * PARTICLES.sparkRearOffset,
+      y: car.position.y - forwardDir.y * PARTICLES.sparkRearOffset,
+      vx: sparkDir.x * sparkSpeed + car.vel.x * 0.2,
+      vy: sparkDir.y * sparkSpeed + car.vel.y * 0.2,
+      life: PARTICLES.sparkLife * (0.7 + Math.random() * 0.4),
+      size: PARTICLES.sparkSize * (0.8 + Math.random() * 0.6),
+      color: "rgb(255, 242, 200)",
+      alpha: PARTICLES.sparkAlpha,
+    });
+  }
+}
+
+function drawProps(propList) {
+  if (!assets) {
+    return;
+  }
+
+  for (let i = 0; i < propList.length; i += 1) {
+    const prop = propList[i];
+    const image = assets[prop.imageKey];
+    if (!image) {
+      continue;
+    }
+
+    context.save();
+    context.translate(prop.position.x, prop.position.y);
+    context.rotate(prop.rotation);
+    context.globalAlpha = 0.85;
+    const width = image.width * prop.scale;
+    const height = image.height * prop.scale;
+    context.drawImage(image, -width / 2, -height / 2, width, height);
+    context.restore();
+  }
+}
+
+function drawPropGlow(propList) {
+  if (!assets) {
+    return;
+  }
+
+  for (let i = 0; i < propList.length; i += 1) {
+    const prop = propList[i];
+    const image = assets[prop.imageKey];
+    if (!image) {
+      continue;
+    }
+
+    const flicker =
+      0.97 + 0.03 * Math.sin(prop.flickerSeed + performance.now() * 0.003);
+    const glowScale = 1.03;
+
+    context.save();
+    context.translate(prop.position.x, prop.position.y);
+    context.rotate(prop.rotation);
+    context.globalAlpha = Math.min(0.6, prop.emissiveStrength * flicker);
+    const width = image.width * prop.scale * glowScale;
+    const height = image.height * prop.scale * glowScale;
+    context.drawImage(image, -width / 2, -height / 2, width, height);
+    context.restore();
+  }
+}
+
+function drawPropDebug(propList) {
+  if (!assets) {
+    return;
+  }
+
+  context.save();
+  context.strokeStyle = "rgba(120, 240, 255, 0.45)";
+  context.lineWidth = 1;
+  for (let i = 0; i < propList.length; i += 1) {
+    const prop = propList[i];
+    const image = assets[prop.imageKey];
+    if (!image) {
+      continue;
+    }
+    const radius = Math.max(image.width, image.height) * prop.scale * 0.5;
+    context.beginPath();
+    context.arc(prop.position.x, prop.position.y, radius, 0, Math.PI * 2);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawTrackDebug(renderCarPos) {
+  const points = track.centerline;
+  const boundaries = track.getBoundaries();
+  const inner = boundaries.inner;
+  const outer = boundaries.outer;
+
+  context.save();
+
+  context.strokeStyle = "rgba(0, 255, 170, 0.5)";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i += 1) {
+    context.lineTo(points[i].x, points[i].y);
+  }
+  context.closePath();
+  context.stroke();
+
+  context.strokeStyle = "rgba(255, 200, 100, 0.6)";
+  context.beginPath();
+  context.moveTo(inner[0].x, inner[0].y);
+  for (let i = 1; i < inner.length; i += 1) {
+    context.lineTo(inner[i].x, inner[i].y);
+  }
+  context.closePath();
+  context.stroke();
+
+  context.strokeStyle = "rgba(255, 120, 220, 0.6)";
+  context.beginPath();
+  context.moveTo(outer[0].x, outer[0].y);
+  for (let i = 1; i < outer.length; i += 1) {
+    context.lineTo(outer[i].x, outer[i].y);
+  }
+  context.closePath();
+  context.stroke();
+
+  const closest = track.getClosestPoint(renderCarPos);
+  context.strokeStyle = "rgba(255, 255, 255, 0.75)";
+  context.beginPath();
+  context.moveTo(renderCarPos.x, renderCarPos.y);
+  context.lineTo(closest.point.x, closest.point.y);
+  context.stroke();
+
+  context.restore();
 }
 
 function drawVelocityArrow(position, velocity) {
@@ -418,7 +841,7 @@ function updateFps(now) {
   }
 }
 
-function drawLoadingScreen() {
+function drawLoadingScreen(message = "Loading...") {
   context.clearRect(0, 0, state.width, state.height);
   context.save();
   context.fillStyle = "#05060b";
@@ -427,24 +850,32 @@ function drawLoadingScreen() {
   context.font = "20px 'Segoe UI', system-ui, sans-serif";
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText("Loading...", state.width / 2, state.height / 2);
+  context.fillText(message, state.width / 2, state.height / 2);
   context.restore();
 }
 
-async function loadCarSprite() {
-  carImage.src = "assets/car.png";
-  if (carImage.decode) {
-    await carImage.decode();
-  } else {
-    await new Promise((resolve, reject) => {
-      carImage.onload = () => resolve();
-      carImage.onerror = reject;
-    });
-  }
+async function loadGameAssets() {
+  const manifest = {
+    car: "assets/car.png",
+    asphalt: "assets/ashphalt_tile.png",
+    skyline: "assets/miami_skyline.png",
+    viceCity: "assets/vice_city_neon_sign.png",
+    palmTree: "assets/palm_tree_neon_sign.png",
+    flamingo: "assets/flamingo_neon_sign.png",
+    neonDistrict: "assets/neon_district_billboard.png",
+    abstractArrows: "assets/abstract_neon_arrows.png",
+    open24h: "assets/open_24h_retro_sign.png",
+    artDecoHotel: "assets/art_deco_hotel_sign.png",
+    neonSkull: "assets/neon_skull.png",
+  };
+
+  assets = await loadAssets(manifest);
   carImageReady = true;
+  roadPattern = context.createPattern(assets.asphalt, "repeat");
+  props = generateProps(track, 202602);
 }
 
-drawLoadingScreen();
-loadCarSprite().then(() => {
+drawLoadingScreen("Loading assets...");
+loadGameAssets().then(() => {
   requestAnimationFrame(gameLoop);
 });

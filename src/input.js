@@ -10,6 +10,15 @@ const SUPPORTED_KEYS = new Set([
   "Space",
   "Shift",
   "KeyR",
+  "KeyC",
+  "KeyP",
+  "KeyG",
+  "KeyM",
+  "KeyT",
+  "KeyH",
+  "KeyN",
+  "KeyL",
+  "KeyK",
 ]);
 
 const down = new Set();
