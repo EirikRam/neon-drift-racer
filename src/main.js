@@ -5,6 +5,8 @@ import { track } from "./track.js";
 import { loadAssets } from "./assets.js";
 import { generateProps } from "./props.js";
 import { renderHUD, renderHelpOverlay } from "./ui.js";
+import { generateBoostPads, updateBoostPads } from "./boostpads.js";
+import { createScoreState, resetRun, updateScore } from "./score.js";
 
 const VERSION = "v0.2.0";
 const FIXED_TIME_STEP = 1000 / 60;
@@ -57,6 +59,13 @@ const COLLISION = {
   flashScale: 0.7,
 };
 
+const BOOST = {
+  accelMultiplier: 1.4,
+  maxSpeedMultiplier: 1.12,
+  trailMultiplier: 1.6,
+  triggerTrailBurst: 6,
+};
+
 const app = document.getElementById("app");
 const canvas = document.createElement("canvas");
 const context = canvas.getContext("2d");
@@ -67,6 +76,8 @@ let assets = null;
 let carImageReady = false;
 let roadPattern = null;
 let props = [];
+let boostPads = [];
+const scoreState = createScoreState();
 let useSprite = true;
 const settings = {
   showSkyline: true,
@@ -119,6 +130,10 @@ const car = {
   speed: 0,
   velAngle: 0,
   onRoad: true,
+  boostActive: false,
+  boostTimer: 0,
+  boostStrength: 1,
+  boostDuration: 0,
 };
 
 const camera = {
@@ -163,6 +178,11 @@ function updateFixed() {
     car.speed = 0;
     car.driftAngle = 0;
     car.driftActive = false;
+    car.boostActive = false;
+    car.boostTimer = 0;
+    car.boostStrength = 1;
+    car.boostDuration = 0;
+    resetRun(scoreState);
   }
 
   if (wasPressed("KeyC")) {
@@ -209,13 +229,29 @@ function updateFixed() {
     settings.showHelp = !settings.showHelp;
   }
 
+  updateBoostState(dt);
   updateCarPhysics(dt);
   const impact = resolveTrackCollision();
   updateImpactState(dt, impact);
-  updateParticles(dt, wasPressed("Space"));
+  const boostEvent = updateBoostPads(car, boostPads, dt);
+  if (boostEvent) {
+    car.boostActive = true;
+    car.boostTimer = boostEvent.pad.duration;
+    car.boostDuration = boostEvent.pad.duration;
+    car.boostStrength = boostEvent.pad.strength;
+  }
+  updateParticles(dt, wasPressed("Space"), Boolean(boostEvent));
   if (impact && settings.showParticles) {
     spawnImpactSparks(impact);
   }
+  updateScore(
+    scoreState,
+    car,
+    track,
+    dt,
+    car.boostActive,
+    impact ? impact.strength : 0,
+  );
 
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
@@ -257,6 +293,7 @@ function render(alpha) {
 
   drawBackgroundGrid(renderCamera);
   drawTrack();
+  drawBoostPads(boostPads);
   if (settings.showNeonProps) {
     drawProps(props);
   }
@@ -279,6 +316,7 @@ function render(alpha) {
     if (settings.showParticles) {
       particlePool.render(context);
     }
+    drawBoostPadGlow(boostPads);
     if (settings.showNeonProps) {
       drawPropGlow(props);
     }
@@ -460,6 +498,9 @@ function drawHud(renderCamera) {
   renderHUD(context, {
     fps: state.fps,
     version: VERSION,
+    score: scoreState.runScore,
+    bestScore: scoreState.bestScore,
+    multiplier: scoreState.multiplier,
     speed: car.speed,
     headingDeg,
     velDeg,
@@ -473,6 +514,9 @@ function drawHud(renderCamera) {
     propCount,
     cameraX: renderCamera.x,
     cameraY: renderCamera.y,
+    boostActive: car.boostActive,
+    boostTimer: car.boostTimer,
+    boostDuration: car.boostDuration,
   });
 }
 
@@ -539,9 +583,12 @@ function updateCarPhysics(dt) {
   const rightDir = { x: -forwardDir.y, y: forwardDir.x };
   const forwardSpeed = car.vel.x * forwardDir.x + car.vel.y * forwardDir.y;
 
+  const boostScale = car.boostActive
+    ? car.boostStrength * BOOST.accelMultiplier
+    : 1;
   let accel = 0;
   if (car.throttleInput > 0) {
-    accel = PHYSICS.engineAccel * car.throttleInput;
+    accel = PHYSICS.engineAccel * boostScale * car.throttleInput;
   } else if (car.throttleInput < 0) {
     if (forwardSpeed > 0) {
       accel = -PHYSICS.brakeDecel * Math.abs(car.throttleInput);
@@ -575,7 +622,10 @@ function updateCarPhysics(dt) {
   vl *= Math.exp(-lateralDamp * dt);
   vf *= Math.exp(-forwardDrag * dt);
 
-  vf = clamp(vf, -PHYSICS.maxSpeedReverse, PHYSICS.maxSpeedForward);
+  const maxForward = car.boostActive
+    ? PHYSICS.maxSpeedForward * BOOST.maxSpeedMultiplier
+    : PHYSICS.maxSpeedForward;
+  vf = clamp(vf, -PHYSICS.maxSpeedReverse, maxForward);
 
   car.vel.x = forwardDir.x * vf + rightDir.x * vl;
   car.vel.y = forwardDir.y * vf + rightDir.y * vl;
@@ -689,7 +739,56 @@ function getCameraShakeOffset() {
   return { x: shakeX, y: shakeY };
 }
 
-function updateParticles(dt, handbrakePressed) {
+function updateBoostState(dt) {
+  if (!car.boostActive) {
+    return;
+  }
+
+  car.boostTimer = Math.max(0, car.boostTimer - dt);
+  if (car.boostTimer === 0) {
+    car.boostActive = false;
+    car.boostStrength = 1;
+    car.boostDuration = 0;
+  }
+}
+
+function drawBoostPads(pads) {
+  if (!pads.length) {
+    return;
+  }
+
+  context.save();
+  context.strokeStyle = "rgba(120, 255, 220, 0.45)";
+  context.lineWidth = 2;
+  for (let i = 0; i < pads.length; i += 1) {
+    const pad = pads[i];
+    const pulse = 0.9 + 0.1 * Math.sin(performance.now() * 0.004 + i);
+    context.beginPath();
+    context.arc(pad.position.x, pad.position.y, pad.radius * pulse, 0, Math.PI * 2);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawBoostPadGlow(pads) {
+  if (!pads.length) {
+    return;
+  }
+
+  context.save();
+  context.strokeStyle = "rgba(140, 255, 240, 0.5)";
+  context.lineWidth = 4;
+  for (let i = 0; i < pads.length; i += 1) {
+    const pad = pads[i];
+    const pulse = 1 + 0.08 * Math.sin(performance.now() * 0.004 + i);
+    context.beginPath();
+    context.arc(pad.position.x, pad.position.y, pad.radius * pulse, 0, Math.PI * 2);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function updateParticles(dt, handbrakePressed, boostTriggered) {
   particlePool.update(dt);
 
   if (!settings.showParticles) {
@@ -726,11 +825,19 @@ function updateParticles(dt, handbrakePressed) {
     trailRate *= PARTICLES.trailHandbrakeBoost;
   }
 
+  if (car.boostActive) {
+    trailRate *= BOOST.trailMultiplier;
+  }
+
   if (handbrakePressed) {
     particleState.trailAccumulator += 4;
   }
 
   particleState.trailRate = trailRate;
+
+  if (boostTriggered) {
+    particleState.trailAccumulator += BOOST.triggerTrailBurst;
+  }
 
   if (speed > PARTICLES.trailSpeedThreshold) {
     particleState.trailAccumulator += trailRate * dt;
@@ -1031,6 +1138,7 @@ async function loadGameAssets() {
   carImageReady = true;
   roadPattern = context.createPattern(assets.asphalt, "repeat");
   props = generateProps(track, 202602);
+  boostPads = generateBoostPads(track, 90210);
 }
 
 drawLoadingScreen("Loading assets...");
