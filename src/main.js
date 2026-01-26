@@ -348,9 +348,14 @@ function render(alpha) {
   if (settings.showSkyline) {
     const currentImage = assets ? assets[skylineState.currentKey] : null;
     const nextImage = assets && skylineState.nextKey ? assets[skylineState.nextKey] : null;
+    const fallbackImage = assets ? assets.skyMetro : null;
     const pixelScale = canvas.width / Math.max(1, state.width);
     drawSkylineFallback(context);
-    drawSkylineLayer(context, renderCamera, currentImage, {
+    drawSkylineLayer(context, renderCamera, fallbackImage, {
+      alpha: 0.9,
+      pixelScale,
+    });
+    drawSkylineLayer(context, renderCamera, currentImage || fallbackImage, {
       alpha: 1,
       pixelScale,
     });
@@ -1437,6 +1442,7 @@ async function loadGameAssets() {
     skyDowntown: "assets/skylines/miami_downtown_grid_skyline.png",
     skyNeon: "assets/skylines/miami_neon_alley_skyline.png",
     skyHarbor: "assets/skylines/miami_harbor_run_skyline.png",
+    skyMetro: "assets/skylines/miami_metro_skyline.png",
     asphalt: "assets/ashphalt_tile.png",
     viceCity: "assets/vice_city_neon_sign.png",
     palmTree: "assets/palm_tree_neon_sign.png",
