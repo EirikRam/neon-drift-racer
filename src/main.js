@@ -799,6 +799,9 @@ function drawHud(renderCamera) {
   const particleCount = particlePool.activeCount;
   const roadStatus = car.onRoad ? "On Road" : "Off Road";
   const propCount = props.length;
+  const propDistrictCounts = settings.showPropDebug
+    ? countPropsByDistrict(props)
+    : null;
   const districtName = settings.showTrackDebug
     ? track.getDistrictName(track.getProgressAlongTrack(car.position))
     : null;
@@ -831,6 +834,7 @@ function drawHud(renderCamera) {
     showPropDebug: settings.showPropDebug,
     showCollisions: settings.showCollisions,
     propCount,
+    propDistrictCounts,
     cameraX: renderCamera.x,
     cameraY: renderCamera.y,
     showTrackDebug: settings.showTrackDebug,
@@ -849,6 +853,22 @@ function drawHud(renderCamera) {
 function lerpAngle(a, b, t) {
   const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
   return a + delta * t;
+}
+
+function countPropsByDistrict(propList) {
+  const counts = {
+    beach: 0,
+    downtown: 0,
+    neon: 0,
+    harbor: 0,
+  };
+  for (let i = 0; i < propList.length; i += 1) {
+    const district = propList[i].districtId;
+    if (district && counts[district] !== undefined) {
+      counts[district] += 1;
+    }
+  }
+  return counts;
 }
 
 function smallestAngleBetween(a, b) {
@@ -1271,8 +1291,14 @@ function drawPropDebug(propList) {
     return;
   }
 
+  const districtColors = {
+    beach: "rgba(102, 225, 255, 0.55)",
+    downtown: "rgba(122, 255, 156, 0.55)",
+    neon: "rgba(255, 122, 217, 0.55)",
+    harbor: "rgba(255, 210, 111, 0.55)",
+  };
+
   context.save();
-  context.strokeStyle = "rgba(120, 240, 255, 0.45)";
   context.lineWidth = 1;
   for (let i = 0; i < propList.length; i += 1) {
     const prop = propList[i];
@@ -1280,6 +1306,8 @@ function drawPropDebug(propList) {
     if (!image) {
       continue;
     }
+    context.strokeStyle =
+      districtColors[prop.districtId] || "rgba(120, 240, 255, 0.45)";
     const radius = Math.max(image.width, image.height) * prop.scale * 0.5;
     context.beginPath();
     context.arc(prop.position.x, prop.position.y, radius, 0, Math.PI * 2);

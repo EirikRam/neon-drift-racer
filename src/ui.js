@@ -29,6 +29,7 @@ export function renderHUD(ctx, hudState) {
     showPropDebug,
     showCollisions,
     propCount,
+    propDistrictCounts,
     cameraX,
     cameraY,
     showTrackDebug,
@@ -65,6 +66,7 @@ export function renderHUD(ctx, hudState) {
   const boostY = 270;
   const boostWidth = 160;
   const boostHeight = 10;
+  const propDebugExtra = showPropDebug && propDistrictCounts ? 18 : 0;
   const boostRatio =
     boostActive && boostDuration > 0 ? boostTimer / boostDuration : 0;
   ctx.fillStyle = "rgba(90, 110, 140, 0.5)";
@@ -79,21 +81,28 @@ export function renderHUD(ctx, hudState) {
   }
   if (showPropDebug) {
     ctx.fillText(`Props: ${propCount}`, 16, boostY + 34);
+    if (propDistrictCounts) {
+      ctx.fillText(
+        `Beach:${propDistrictCounts.beach} Downtown:${propDistrictCounts.downtown} Neon:${propDistrictCounts.neon} Harbor:${propDistrictCounts.harbor}`,
+        16,
+        boostY + 52,
+      );
+    }
   }
   if (showNearMissDebug) {
     ctx.fillText(
       `Traffic: ${trafficCount}  Near Misses: ${nearMissCount}  Knocked: ${knockedCount}`,
       16,
-      showPropDebug ? boostY + 52 : boostY + 34,
+      showPropDebug ? boostY + 52 + propDebugExtra : boostY + 34,
     );
   }
   ctx.fillText(
     `Camera: ${cameraX.toFixed(1)}, ${cameraY.toFixed(1)}`,
     16,
     showNearMissDebug
-      ? boostY + (showPropDebug ? 70 : 52)
+      ? boostY + (showPropDebug ? 70 + propDebugExtra : 52)
       : showPropDebug
-        ? boostY + 52
+        ? boostY + 52 + propDebugExtra
         : boostY + 34,
   );
   if (showTrackDebug && districtName) {
@@ -101,9 +110,9 @@ export function renderHUD(ctx, hudState) {
       `District: ${districtName}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 88 : 70)
+        ? boostY + (showPropDebug ? 88 + propDebugExtra : 70)
         : showPropDebug
-          ? boostY + 70
+          ? boostY + 70 + propDebugExtra
           : boostY + 52,
     );
   }
@@ -116,9 +125,9 @@ export function renderHUD(ctx, hudState) {
       `Skyline: ${skylineInfo.currentKey}${nextLabel}${fadeLabel}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 106 : 88)
+        ? boostY + (showPropDebug ? 106 + propDebugExtra : 88)
         : showPropDebug
-          ? boostY + 88
+          ? boostY + 88 + propDebugExtra
           : boostY + 70,
     );
   }
