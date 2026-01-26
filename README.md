@@ -10,3 +10,4 @@
 - Space: (placeholder)
 - Shift: (placeholder)
 - R: reset car
+- K: toggle prop debug

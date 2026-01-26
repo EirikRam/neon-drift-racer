@@ -4,6 +4,7 @@ import { ParticlePool } from "./particles.js";
 import { track } from "./track.js";
 import { loadAssets } from "./assets.js";
 import { generateProps } from "./props.js";
+import { renderHUD, renderHelpOverlay } from "./ui.js";
 
 const VERSION = "v0.2.0";
 const FIXED_TIME_STEP = 1000 / 60;
@@ -58,14 +59,17 @@ let carImageReady = false;
 let roadPattern = null;
 let props = [];
 let useSprite = true;
-let particlesEnabled = true;
-let glowEnabled = true;
-let motionBlurEnabled = true;
-let trackDebugEnabled = false;
-let skylineEnabled = true;
-let neonPropsEnabled = true;
-let laneMarksEnabled = true;
-let propDebugEnabled = false;
+const settings = {
+  showSkyline: true,
+  showNeonProps: true,
+  showLaneMarkings: true,
+  showParticles: true,
+  showGlow: true,
+  showMotionBlur: true,
+  showTrackDebug: false,
+  showPropDebug: false,
+  showHelp: false,
+};
 
 const particlePool = new ParticlePool(PARTICLES.maxCount);
 const particleState = {
@@ -150,35 +154,39 @@ function updateFixed() {
   }
 
   if (wasPressed("KeyP")) {
-    particlesEnabled = !particlesEnabled;
+    settings.showParticles = !settings.showParticles;
   }
 
   if (wasPressed("KeyG")) {
-    glowEnabled = !glowEnabled;
+    settings.showGlow = !settings.showGlow;
   }
 
   if (wasPressed("KeyM")) {
-    motionBlurEnabled = !motionBlurEnabled;
+    settings.showMotionBlur = !settings.showMotionBlur;
   }
 
   if (wasPressed("KeyT")) {
-    trackDebugEnabled = !trackDebugEnabled;
+    settings.showTrackDebug = !settings.showTrackDebug;
   }
 
   if (wasPressed("KeyH")) {
-    skylineEnabled = !skylineEnabled;
+    settings.showSkyline = !settings.showSkyline;
   }
 
   if (wasPressed("KeyN")) {
-    neonPropsEnabled = !neonPropsEnabled;
+    settings.showNeonProps = !settings.showNeonProps;
   }
 
   if (wasPressed("KeyL")) {
-    laneMarksEnabled = !laneMarksEnabled;
+    settings.showLaneMarkings = !settings.showLaneMarkings;
   }
 
   if (wasPressed("KeyK")) {
-    propDebugEnabled = !propDebugEnabled;
+    settings.showPropDebug = !settings.showPropDebug;
+  }
+
+  if (wasPressed("F1") || (wasPressed("Slash") && isDown("Shift"))) {
+    settings.showHelp = !settings.showHelp;
   }
 
   updateCarPhysics(dt);
@@ -190,7 +198,7 @@ function updateFixed() {
 }
 
 function render(alpha) {
-  if (motionBlurEnabled) {
+  if (settings.showMotionBlur) {
     context.save();
     context.fillStyle = "rgba(5, 6, 11, 0.16)";
     context.fillRect(0, 0, state.width, state.height);
@@ -214,14 +222,14 @@ function render(alpha) {
   };
 
   context.save();
-  if (skylineEnabled) {
+  if (settings.showSkyline) {
     drawSkyline(renderCamera);
   }
   context.translate(state.width / 2 - renderCamera.x, state.height / 2 - renderCamera.y);
 
   drawBackgroundGrid(renderCamera);
   drawTrack();
-  if (neonPropsEnabled) {
+  if (settings.showNeonProps) {
     drawProps(props);
   }
   if (useSprite) {
@@ -233,31 +241,42 @@ function render(alpha) {
     x: lerp(car.prevVel.x, car.vel.x, alpha),
     y: lerp(car.prevVel.y, car.vel.y, alpha),
   });
-  if (propDebugEnabled) {
+  if (settings.showPropDebug) {
     drawPropDebug(props);
   }
 
-  if (glowEnabled) {
+  if (settings.showGlow) {
     context.save();
     context.globalCompositeOperation = "lighter";
-    if (particlesEnabled) {
+    if (settings.showParticles) {
       particlePool.render(context);
     }
-    if (neonPropsEnabled) {
+    if (settings.showNeonProps) {
       drawPropGlow(props);
     }
     context.restore();
-  } else if (particlesEnabled) {
+  } else if (settings.showParticles) {
     particlePool.render(context);
   }
 
-  if (trackDebugEnabled) {
+  if (settings.showTrackDebug) {
     drawTrackDebug(renderCarPos);
   }
 
   context.restore();
 
   drawHud(renderCamera);
+  renderHelpOverlay(context, {
+    showHelp: settings.showHelp,
+    showSkyline: settings.showSkyline,
+    showNeonProps: settings.showNeonProps,
+    showLaneMarkings: settings.showLaneMarkings,
+    showParticles: settings.showParticles,
+    showGlow: settings.showGlow,
+    showMotionBlur: settings.showMotionBlur,
+    showTrackDebug: settings.showTrackDebug,
+    showPropDebug: settings.showPropDebug,
+  });
 }
 
 function drawBackgroundGrid(cameraPos) {
@@ -334,7 +353,7 @@ function drawTrack() {
   context.closePath();
   context.stroke();
 
-  if (laneMarksEnabled) {
+  if (settings.showLaneMarkings) {
     context.save();
     context.strokeStyle = "rgba(240, 250, 255, 0.35)";
     context.lineWidth = 2;
@@ -402,33 +421,22 @@ function drawHud(renderCamera) {
   const roadStatus = car.onRoad ? "On Road" : "Off Road";
   const propCount = props.length;
 
-  context.save();
-  context.fillStyle = "rgba(207, 232, 255, 0.9)";
-  context.font = "14px 'Segoe UI', system-ui, sans-serif";
-  context.textBaseline = "top";
-  context.fillText(`FPS: ${state.fps.toFixed(0)}`, 16, 12);
-  context.fillText(`Neon Drift Runner ${VERSION}`, 16, 30);
-  context.fillText(`Speed: ${car.speed.toFixed(1)} u/s`, 16, 50);
-  context.fillText(`Heading: ${headingDeg.toFixed(1)}°`, 16, 68);
-  context.fillText(`Vel Dir: ${velDeg.toFixed(1)}°`, 16, 86);
-  context.fillText(`Drift: ${driftDeg.toFixed(1)}°`, 16, 104);
-  context.fillText(`Drift Active: ${car.driftActive}`, 16, 122);
-  context.fillText(`Particles: ${particleCount}`, 16, 140);
-  context.fillText(
-    `Trail Rate: ${particleState.trailRate.toFixed(1)} / s`,
-    16,
-    158,
-  );
-  context.fillText(`Road: ${roadStatus}`, 16, 176);
-  if (propDebugEnabled) {
-    context.fillText(`Props: ${propCount}`, 16, 194);
-  }
-  context.fillText(
-    `Camera: ${renderCamera.x.toFixed(1)}, ${renderCamera.y.toFixed(1)}`,
-    16,
-    propDebugEnabled ? 212 : 194,
-  );
-  context.restore();
+  renderHUD(context, {
+    fps: state.fps,
+    version: VERSION,
+    speed: car.speed,
+    headingDeg,
+    velDeg,
+    driftDeg,
+    driftActive: car.driftActive,
+    particleCount,
+    trailRate: particleState.trailRate,
+    roadStatus,
+    showPropDebug: settings.showPropDebug,
+    propCount,
+    cameraX: renderCamera.x,
+    cameraY: renderCamera.y,
+  });
 }
 
 function lerpAngle(a, b, t) {
@@ -555,7 +563,7 @@ function updateCarPhysics(dt) {
 function updateParticles(dt, handbrakePressed) {
   particlePool.update(dt);
 
-  if (!particlesEnabled) {
+  if (!settings.showParticles) {
     particleState.trailRate = 0;
     return;
   }
