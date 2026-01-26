@@ -1,4 +1,4 @@
-export const CAR_RENDER_SIZE = 88;
+export const CAR_RENDER_SIZE = 125;
 const CAR_ROTATION_OFFSET = -Math.PI / 2;
 
 export function drawCarSprite(ctx, img, pos, heading, renderSize = CAR_RENDER_SIZE) {

@@ -71,6 +71,18 @@ const TRAFFIC = {
   sparkCooldown: 0.25,
 };
 
+const BULLY = {
+  impulseScale: 0.9,
+  npcBoost: 1.4,
+  playerDamp: 0.25,
+  knockbackHold: 0.35,
+  knockbackSpeedHold: 0.45,
+  maxNpcKnockSpeed: 520,
+  impactFxCooldown: 0.25,
+  impactFxMinSpeed: 220,
+  impactFxMinPenetration: 6,
+};
+
 const BOOST = {
   accelMultiplier: 1.4,
   maxSpeedMultiplier: 1.12,
@@ -102,6 +114,7 @@ const settings = {
   showCollisions: true,
   showTraffic: true,
   showNearMissDebug: false,
+  enableBully: true,
   showHelp: false,
 };
 
@@ -154,6 +167,8 @@ const car = {
   boostTimer: 0,
   boostStrength: 1,
   boostDuration: 0,
+  mass: 1,
+  radius: TRAFFIC.collisionRadius,
 };
 
 const camera = {
@@ -251,6 +266,10 @@ function updateFixed() {
 
   if (wasPressed("KeyU")) {
     settings.showNearMissDebug = !settings.showNearMissDebug;
+  }
+
+  if (wasPressed("KeyI")) {
+    settings.enableBully = !settings.enableBully;
   }
 
   if (wasPressed("F1") || (wasPressed("Slash") && isDown("Shift"))) {
@@ -384,6 +403,7 @@ function render(alpha) {
     showCollisions: settings.showCollisions,
     showTraffic: settings.showTraffic,
     showNearMissDebug: settings.showNearMissDebug,
+    showBully: settings.enableBully,
   });
 }
 
@@ -544,33 +564,41 @@ function resolveTrafficInteractions(dt) {
 
   const playerSpeed = car.speed;
   const minSpeed = TRAFFIC.nearMissMinSpeed;
-  const collisionRadius = TRAFFIC.collisionRadius;
 
   for (let i = 0; i < trafficState.system.cars.length; i += 1) {
     const npc = trafficState.system.cars[i];
-    const dx = car.position.x - npc.pos.x;
-    const dy = car.position.y - npc.pos.y;
+    const dx = npc.pos.x - car.position.x;
+    const dy = npc.pos.y - car.position.y;
     const distance = Math.hypot(dx, dy);
-    const combinedRadius = collisionRadius + npc.radius;
+    const combinedRadius = car.radius + npc.radius;
 
-    if (distance < combinedRadius) {
-      const safeDistance = distance > 0.0001 ? distance : 0.0001;
-      const nx = dx / safeDistance;
-      const ny = dy / safeDistance;
-      const correction = (combinedRadius - safeDistance) * TRAFFIC.positionCorrection;
-      car.position.x += nx * correction;
-      car.position.y += ny * correction;
-      if (trafficState.impactCooldown === 0) {
-        trafficState.impactCooldown = TRAFFIC.impactCooldown;
-        car.vel.x *= TRAFFIC.velocityDamping;
-        car.vel.y *= TRAFFIC.velocityDamping;
+    if (settings.enableBully) {
+      const collision = resolvePlayerNpcCollision(car, npc, dt);
+      if (collision) {
+        if (
+          trafficState.impactCooldown === 0 &&
+          playerSpeed > BULLY.impactFxMinSpeed &&
+          collision.penetration > BULLY.impactFxMinPenetration
+        ) {
+          trafficState.impactCooldown = BULLY.impactFxCooldown;
+          impactState.shakeIntensity = Math.min(1, impactState.shakeIntensity + 0.25);
+          impactState.flashAlpha = Math.min(0.7, impactState.flashAlpha + 0.2);
+          if (settings.showParticles) {
+            spawnImpactSparks({
+              position: { x: npc.pos.x, y: npc.pos.y },
+              normal: collision.normal,
+              strength: Math.min(1, collision.penetration / (car.radius * 0.6)),
+            });
+          }
+        }
+        continue;
       }
-      continue;
     }
 
     if (
       playerSpeed > minSpeed &&
       distance < TRAFFIC.nearMissRadius &&
+      distance > combinedRadius &&
       npc.nearMissCooldown === 0
     ) {
       npc.nearMissCooldown = 0.8;
@@ -581,6 +609,60 @@ function resolveTrafficInteractions(dt) {
       }
     }
   }
+}
+
+function resolvePlayerNpcCollision(player, npc, dt) {
+  const dx = npc.pos.x - player.position.x;
+  const dy = npc.pos.y - player.position.y;
+  const distance = Math.hypot(dx, dy);
+  const minDist = player.radius + npc.radius;
+  if (!(distance < minDist)) {
+    return null;
+  }
+
+  const normal = safeNormalize(dx, dy);
+  const penetration = minDist - distance;
+  const totalMass = player.mass + npc.mass;
+  const playerShare = npc.mass / totalMass;
+  const npcShare = player.mass / totalMass;
+
+  player.position.x -= normal.x * penetration * playerShare;
+  player.position.y -= normal.y * penetration * playerShare;
+  npc.pos.x += normal.x * penetration * npcShare;
+  npc.pos.y += normal.y * penetration * npcShare;
+
+  const relVelX = npc.vel.x - player.vel.x;
+  const relVelY = npc.vel.y - player.vel.y;
+  const relN = relVelX * normal.x + relVelY * normal.y;
+  if (relN < 0) {
+    const impulseMag = -relN * BULLY.impulseScale;
+    const npcBoost = impulseMag * (player.mass / npc.mass) * BULLY.npcBoost;
+    const playerDamp = impulseMag * (npc.mass / player.mass) * BULLY.playerDamp;
+    npc.vel.x += normal.x * npcBoost;
+    npc.vel.y += normal.y * npcBoost;
+    player.vel.x -= normal.x * playerDamp;
+    player.vel.y -= normal.y * playerDamp;
+  }
+
+  const npcSpeed = Math.hypot(npc.vel.x, npc.vel.y);
+  if (npcSpeed > BULLY.maxNpcKnockSpeed) {
+    const scale = BULLY.maxNpcKnockSpeed / npcSpeed;
+    npc.vel.x *= scale;
+    npc.vel.y *= scale;
+  }
+
+  npc.knockbackTimer = Math.max(npc.knockbackTimer, BULLY.knockbackHold);
+  npc.speedHoldTimer = Math.max(npc.speedHoldTimer, BULLY.knockbackSpeedHold);
+
+  return { penetration, normal };
+}
+
+function safeNormalize(x, y) {
+  const length = Math.hypot(x, y);
+  if (!Number.isFinite(length) || length < 1e-6) {
+    return { x: 1, y: 0 };
+  }
+  return { x: x / length, y: y / length };
 }
 
 function drawTrafficCars() {
@@ -656,6 +738,10 @@ function drawHud(renderCamera) {
   const particleCount = particlePool.activeCount;
   const roadStatus = car.onRoad ? "On Road" : "Off Road";
   const propCount = props.length;
+  const knockedCount =
+    settings.showNearMissDebug && trafficState.system
+      ? trafficState.system.cars.filter((npc) => npc.knockbackTimer > 0).length
+      : 0;
 
   renderHUD(context, {
     fps: state.fps,
@@ -682,6 +768,7 @@ function drawHud(renderCamera) {
     trafficCount: settings.showTraffic ? trafficState.system?.cars.length || 0 : 0,
     nearMissCount: scoreState.nearMissCount,
     showNearMissDebug: settings.showNearMissDebug,
+    knockedCount,
   });
 }
 

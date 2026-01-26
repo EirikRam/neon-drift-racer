@@ -37,6 +37,7 @@ export function renderHUD(ctx, hudState) {
     trafficCount,
     nearMissCount,
     showNearMissDebug,
+    knockedCount,
   } = hudState;
 
   ctx.save();
@@ -78,7 +79,7 @@ export function renderHUD(ctx, hudState) {
   }
   if (showNearMissDebug) {
     ctx.fillText(
-      `Traffic: ${trafficCount}  Near Misses: ${nearMissCount}`,
+      `Traffic: ${trafficCount}  Near Misses: ${nearMissCount}  Knocked: ${knockedCount}`,
       16,
       showPropDebug ? boostY + 52 : boostY + 34,
     );
@@ -121,6 +122,7 @@ export function renderHelpOverlay(ctx, uiState) {
     `  J – Collisions     [${formatToggle(uiState.showCollisions)}]`,
     `  Y – Traffic        [${formatToggle(uiState.showTraffic)}]`,
     `  U – Near Miss HUD  [${formatToggle(uiState.showNearMissDebug)}]`,
+    `  I – Bully Collide  [${formatToggle(uiState.showBully)}]`,
   ];
 
   const padding = 16;

@@ -33,6 +33,10 @@ function createTrafficCar(id, progress, laneIndex, laneOffset, baseSpeed, radius
     pos: { x: 0, y: 0 },
     vel: { x: 0, y: 0 },
     radius,
+    mass: 0.6,
+    knockbackTimer: 0,
+    knockbackVelScale: 1,
+    speedHoldTimer: 0,
     nearMissCooldown: 0,
   };
 }
@@ -104,7 +108,10 @@ export function createTrafficSystem(track, seed = 424242, overrides = {}) {
       for (let i = 0; i < cars.length; i += 1) {
         const car = cars[i];
         car.nearMissCooldown = Math.max(0, car.nearMissCooldown - dt);
-        car.speed += (car.desiredSpeed - car.speed) * (1 - Math.exp(-settings.speedFollow * dt));
+        car.speedHoldTimer = Math.max(0, car.speedHoldTimer - dt);
+        const speedHoldScale = car.speedHoldTimer > 0 ? 0.85 : 1;
+        const speedTarget = car.desiredSpeed * speedHoldScale;
+        car.speed += (speedTarget - car.speed) * (1 - Math.exp(-settings.speedFollow * dt));
         car.progress = (car.progress + (car.speed / track.totalLength) * dt) % 1;
 
         const sample = track.getPointAtProgress(car.progress);
@@ -114,12 +121,31 @@ export function createTrafficSystem(track, seed = 424242, overrides = {}) {
           y: sample.point.y + sample.normal.y * car.laneOffset,
         };
         const follow = 1 - Math.exp(-settings.positionFollow * dt);
-        const prevX = car.pos.x;
-        const prevY = car.pos.y;
-        car.pos.x = lerp(car.pos.x, targetPos.x, follow);
-        car.pos.y = lerp(car.pos.y, targetPos.y, follow);
-        car.vel.x = (car.pos.x - prevX) / Math.max(dt, 0.0001);
-        car.vel.y = (car.pos.y - prevY) / Math.max(dt, 0.0001);
+        if (car.knockbackTimer > 0) {
+          car.knockbackTimer = Math.max(0, car.knockbackTimer - dt);
+          const toTargetX = targetPos.x - car.pos.x;
+          const toTargetY = targetPos.y - car.pos.y;
+          const desiredVelX = toTargetX / Math.max(dt, 0.0001);
+          const desiredVelY = toTargetY / Math.max(dt, 0.0001);
+          const steerBlend = follow * 0.35;
+          const damp = Math.exp(-2.4 * dt * car.knockbackVelScale);
+          car.vel.x = lerp(car.vel.x, desiredVelX, steerBlend) * damp;
+          car.vel.y = lerp(car.vel.y, desiredVelY, steerBlend) * damp;
+          car.pos.x += car.vel.x * dt;
+          car.pos.y += car.vel.y * dt;
+          if (!track.isOnRoad(car.pos)) {
+            const recover = follow * 0.6;
+            car.pos.x = lerp(car.pos.x, targetPos.x, recover);
+            car.pos.y = lerp(car.pos.y, targetPos.y, recover);
+          }
+        } else {
+          const prevX = car.pos.x;
+          const prevY = car.pos.y;
+          car.pos.x = lerp(car.pos.x, targetPos.x, follow);
+          car.pos.y = lerp(car.pos.y, targetPos.y, follow);
+          car.vel.x = (car.pos.x - prevX) / Math.max(dt, 0.0001);
+          car.vel.y = (car.pos.y - prevY) / Math.max(dt, 0.0001);
+        }
         car.heading = Math.atan2(sample.tangent.y, sample.tangent.x);
       }
     },
@@ -144,7 +170,20 @@ function updateSpacing(track, cars, settings) {
       const car = list[i];
       const ahead = list[(i + 1) % list.length];
       const gapProgress = (ahead.progress - car.progress + 1) % 1;
-      const gapDistance = gapProgress * track.totalLength;
+      let gapDistance = gapProgress * track.totalLength;
+      if (
+        Number.isFinite(car.pos.x) &&
+        Number.isFinite(car.pos.y) &&
+        Number.isFinite(ahead.pos.x) &&
+        Number.isFinite(ahead.pos.y)
+      ) {
+        const dx = ahead.pos.x - car.pos.x;
+        const dy = ahead.pos.y - car.pos.y;
+        const directDist = Math.hypot(dx, dy);
+        if (Number.isFinite(directDist)) {
+          gapDistance = Math.min(gapDistance, directDist);
+        }
+      }
       const spacingRatio = clamp(gapDistance / settings.minSpacing, 0.35, 1);
       const targetSpeed = car.baseSpeed * spacingRatio;
       car.desiredSpeed += (targetSpeed - car.desiredSpeed) * 0.12;
