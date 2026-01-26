@@ -34,6 +34,9 @@ export function renderHUD(ctx, hudState) {
     boostActive,
     boostTimer,
     boostDuration,
+    trafficCount,
+    nearMissCount,
+    showNearMissDebug,
   } = hudState;
 
   ctx.save();
@@ -73,10 +76,21 @@ export function renderHUD(ctx, hudState) {
   if (showPropDebug) {
     ctx.fillText(`Props: ${propCount}`, 16, boostY + 34);
   }
+  if (showNearMissDebug) {
+    ctx.fillText(
+      `Traffic: ${trafficCount}  Near Misses: ${nearMissCount}`,
+      16,
+      showPropDebug ? boostY + 52 : boostY + 34,
+    );
+  }
   ctx.fillText(
     `Camera: ${cameraX.toFixed(1)}, ${cameraY.toFixed(1)}`,
     16,
-    showPropDebug ? boostY + 52 : boostY + 34,
+    showNearMissDebug
+      ? boostY + (showPropDebug ? 70 : 52)
+      : showPropDebug
+        ? boostY + 52
+        : boostY + 34,
   );
   ctx.restore();
 }
@@ -105,6 +119,8 @@ export function renderHelpOverlay(ctx, uiState) {
     `  T – Track Debug    [${formatToggle(uiState.showTrackDebug)}]`,
     `  K – Prop Debug     [${formatToggle(uiState.showPropDebug)}]`,
     `  J – Collisions     [${formatToggle(uiState.showCollisions)}]`,
+    `  Y – Traffic        [${formatToggle(uiState.showTraffic)}]`,
+    `  U – Near Miss HUD  [${formatToggle(uiState.showNearMissDebug)}]`,
   ];
 
   const padding = 16;

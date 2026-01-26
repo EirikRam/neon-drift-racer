@@ -10,6 +10,8 @@ export const SCORE = {
   offRoadResetTime: 1.2,
   impactResetThreshold: 0.25,
   boostBonus: 1.15,
+  nearMissBonus: 120,
+  nearMissMultiplierGain: 0.18,
 };
 
 export function createScoreState() {
@@ -21,6 +23,7 @@ export function createScoreState() {
     runScore: 0,
     driftPointsThisTick: 0,
     offRoadTimer: 0,
+    nearMissCount: 0,
   };
 }
 
@@ -31,6 +34,18 @@ export function resetRun(state) {
   state.runScore = 0;
   state.driftPointsThisTick = 0;
   state.offRoadTimer = 0;
+  state.nearMissCount = 0;
+}
+
+export function registerNearMiss(state, bonus = SCORE.nearMissBonus) {
+  state.score += bonus * state.multiplier;
+  state.runScore = state.score;
+  state.comboTimer = SCORE.comboGrace;
+  state.multiplier = Math.min(
+    SCORE.maxMultiplier,
+    state.multiplier + SCORE.nearMissMultiplierGain,
+  );
+  state.nearMissCount += 1;
 }
 
 export function updateScore(state, car, track, dt, boostActive, impactStrength) {

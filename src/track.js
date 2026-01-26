@@ -145,9 +145,44 @@ class Track {
     return closest.along / this.totalLength;
   }
 
+  getPointAtProgress(progress) {
+    const normalized = ((progress % 1) + 1) % 1;
+    const targetDistance = normalized * this.totalLength;
+
+    let segmentIndex = 0;
+    for (let i = 0; i < this.centerline.length; i += 1) {
+      const start = this.cumulativeLengths[i];
+      const end = start + this.segmentLengths[i];
+      if (targetDistance >= start && targetDistance <= end) {
+        segmentIndex = i;
+        break;
+      }
+    }
+
+    const nextIndex = (segmentIndex + 1) % this.centerline.length;
+    const a = this.centerline[segmentIndex];
+    const b = this.centerline[nextIndex];
+    const segmentLength = this.segmentLengths[segmentIndex] || 1;
+    const segmentStart = this.cumulativeLengths[segmentIndex];
+    const t = clamp((targetDistance - segmentStart) / segmentLength, 0, 1);
+    const point = createVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    const tangent = safeNormalize(b.x - a.x, b.y - a.y);
+    const normal = safeNormalize(-tangent.y, tangent.x);
+
+    return { point, tangent, normal };
+  }
+
   getBoundaries() {
     return { inner: this.innerBoundary, outer: this.outerBoundary };
   }
+}
+
+function safeNormalize(x, y) {
+  const length = Math.hypot(x, y);
+  if (!Number.isFinite(length) || length < 1e-6) {
+    return { x: 1, y: 0 };
+  }
+  return { x: x / length, y: y / length };
 }
 
 export function createTrack() {

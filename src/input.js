@@ -19,6 +19,8 @@ const SUPPORTED_KEYS = new Set([
   "KeyN",
   "KeyL",
   "KeyK",
+  "KeyY",
+  "KeyU",
   "Slash",
   "F1",
   "KeyJ",

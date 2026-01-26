@@ -6,7 +6,9 @@ import { loadAssets } from "./assets.js";
 import { generateProps } from "./props.js";
 import { renderHUD, renderHelpOverlay } from "./ui.js";
 import { generateBoostPads, updateBoostPads } from "./boostpads.js";
-import { createScoreState, resetRun, updateScore } from "./score.js";
+import { createScoreState, resetRun, updateScore, registerNearMiss, SCORE } from "./score.js";
+import { drawCarSprite, CAR_RENDER_SIZE } from "./carRender.js";
+import { createTrafficSystem } from "./traffic.js";
 
 const VERSION = "v0.2.0";
 const FIXED_TIME_STEP = 1000 / 60;
@@ -59,6 +61,16 @@ const COLLISION = {
   flashScale: 0.7,
 };
 
+const TRAFFIC = {
+  nearMissMinSpeed: 120,
+  nearMissRadius: CAR_RENDER_SIZE * 1.25,
+  collisionRadius: CAR_RENDER_SIZE * 0.38,
+  impactCooldown: 0.35,
+  positionCorrection: 0.6,
+  velocityDamping: 0.82,
+  sparkCooldown: 0.25,
+};
+
 const BOOST = {
   accelMultiplier: 1.4,
   maxSpeedMultiplier: 1.12,
@@ -73,7 +85,6 @@ const context = canvas.getContext("2d");
 app.appendChild(canvas);
 
 let assets = null;
-let carImageReady = false;
 let roadPattern = null;
 let props = [];
 let boostPads = [];
@@ -89,6 +100,8 @@ const settings = {
   showTrackDebug: false,
   showPropDebug: false,
   showCollisions: true,
+  showTraffic: true,
+  showNearMissDebug: false,
   showHelp: false,
 };
 
@@ -103,6 +116,13 @@ const particleState = {
   trailAccumulator: 0,
   sparkAccumulator: 0,
   trailRate: 0,
+};
+
+const trafficState = {
+  system: null,
+  impactCooldown: 0,
+  sparkCooldown: 0,
+  carSprites: [],
 };
 
 const state = {
@@ -225,13 +245,23 @@ function updateFixed() {
     settings.showCollisions = !settings.showCollisions;
   }
 
+  if (wasPressed("KeyY")) {
+    settings.showTraffic = !settings.showTraffic;
+  }
+
+  if (wasPressed("KeyU")) {
+    settings.showNearMissDebug = !settings.showNearMissDebug;
+  }
+
   if (wasPressed("F1") || (wasPressed("Slash") && isDown("Shift"))) {
     settings.showHelp = !settings.showHelp;
   }
 
   updateBoostState(dt);
   updateCarPhysics(dt);
+  updateTraffic(dt);
   const impact = resolveTrackCollision();
+  resolveTrafficInteractions(dt);
   updateImpactState(dt, impact);
   const boostEvent = updateBoostPads(car, boostPads, dt);
   if (boostEvent) {
@@ -256,6 +286,7 @@ function updateFixed() {
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
   camera.position.y = lerp(camera.position.y, car.position.y, cameraFollow);
+  runDebugSafetyChecks();
 }
 
 function render(alpha) {
@@ -297,8 +328,9 @@ function render(alpha) {
   if (settings.showNeonProps) {
     drawProps(props);
   }
+  drawTrafficCars();
   if (useSprite) {
-    drawCarSprite(renderCarPos, renderHeading);
+    drawCarSprite(context, assets?.playerCar, renderCarPos, renderHeading, CAR_RENDER_SIZE);
   } else {
     drawCarPlaceholder(renderCarPos, renderHeading);
   }
@@ -350,6 +382,8 @@ function render(alpha) {
     showTrackDebug: settings.showTrackDebug,
     showPropDebug: settings.showPropDebug,
     showCollisions: settings.showCollisions,
+    showTraffic: settings.showTraffic,
+    showNearMissDebug: settings.showNearMissDebug,
   });
 }
 
@@ -446,29 +480,6 @@ function drawTrack() {
   context.restore();
 }
 
-function drawCarSprite(position, heading) {
-  if (!carImageReady || !assets) {
-    return;
-  }
-
-  const carImage = assets.car;
-  const spriteWidth = 64;
-  const spriteHeight = (carImage.height / carImage.width) * spriteWidth;
-  const rotationOffset = -Math.PI / 2;
-
-  context.save();
-  context.translate(position.x, position.y);
-  context.rotate(heading + rotationOffset);
-  context.drawImage(
-    carImage,
-    -spriteWidth / 2,
-    -spriteHeight / 2,
-    spriteWidth,
-    spriteHeight,
-  );
-  context.restore();
-}
-
 function drawCarPlaceholder(position, heading) {
   context.save();
   context.translate(position.x, position.y);
@@ -485,6 +496,157 @@ function drawCarPlaceholder(position, heading) {
   context.fill();
 
   context.restore();
+}
+
+function updateTraffic(dt) {
+  if (!settings.showTraffic || !trafficState.system) {
+    return;
+  }
+
+  trafficState.system.update(dt);
+
+  const debugMode = settings.showTrackDebug || settings.showPropDebug;
+  if (!debugMode) {
+    return;
+  }
+
+  for (const carEntity of trafficState.system.cars) {
+    if (!Number.isFinite(carEntity.pos.x) || !Number.isFinite(carEntity.pos.y)) {
+      const sample = track.getPointAtProgress(carEntity.progress);
+      carEntity.pos.x = sample.point.x;
+      carEntity.pos.y = sample.point.y;
+      carEntity.vel.x = 0;
+      carEntity.vel.y = 0;
+    }
+  }
+
+}
+
+function runDebugSafetyChecks() {
+  const debugMode = settings.showTrackDebug || settings.showPropDebug;
+  if (!debugMode) {
+    return;
+  }
+
+  if (!Number.isFinite(camera.position.x) || !Number.isFinite(camera.position.y)) {
+    camera.position.x = car.position.x;
+    camera.position.y = car.position.y;
+  }
+}
+
+function resolveTrafficInteractions(dt) {
+  if (!settings.showTraffic || !trafficState.system) {
+    return;
+  }
+
+  trafficState.impactCooldown = Math.max(0, trafficState.impactCooldown - dt);
+  trafficState.sparkCooldown = Math.max(0, trafficState.sparkCooldown - dt);
+
+  const playerSpeed = car.speed;
+  const minSpeed = TRAFFIC.nearMissMinSpeed;
+  const collisionRadius = TRAFFIC.collisionRadius;
+
+  for (let i = 0; i < trafficState.system.cars.length; i += 1) {
+    const npc = trafficState.system.cars[i];
+    const dx = car.position.x - npc.pos.x;
+    const dy = car.position.y - npc.pos.y;
+    const distance = Math.hypot(dx, dy);
+    const combinedRadius = collisionRadius + npc.radius;
+
+    if (distance < combinedRadius) {
+      const safeDistance = distance > 0.0001 ? distance : 0.0001;
+      const nx = dx / safeDistance;
+      const ny = dy / safeDistance;
+      const correction = (combinedRadius - safeDistance) * TRAFFIC.positionCorrection;
+      car.position.x += nx * correction;
+      car.position.y += ny * correction;
+      if (trafficState.impactCooldown === 0) {
+        trafficState.impactCooldown = TRAFFIC.impactCooldown;
+        car.vel.x *= TRAFFIC.velocityDamping;
+        car.vel.y *= TRAFFIC.velocityDamping;
+      }
+      continue;
+    }
+
+    if (
+      playerSpeed > minSpeed &&
+      distance < TRAFFIC.nearMissRadius &&
+      npc.nearMissCooldown === 0
+    ) {
+      npc.nearMissCooldown = 0.8;
+      registerNearMiss(scoreState, SCORE.nearMissBonus);
+      if (settings.showParticles && trafficState.sparkCooldown === 0) {
+        spawnNearMissSparks(npc.pos);
+        trafficState.sparkCooldown = TRAFFIC.sparkCooldown;
+      }
+    }
+  }
+}
+
+function drawTrafficCars() {
+  if (!settings.showTraffic || !trafficState.system || !assets) {
+    return;
+  }
+
+  for (let i = 0; i < trafficState.system.cars.length; i += 1) {
+    const npc = trafficState.system.cars[i];
+    const spriteKey = trafficState.carSprites[i];
+    const sprite = assets[spriteKey];
+    if (!sprite) {
+      continue;
+    }
+    if (useSprite) {
+      drawCarSprite(context, sprite, npc.pos, npc.heading, CAR_RENDER_SIZE);
+    } else {
+      drawCarPlaceholder(npc.pos, npc.heading);
+    }
+  }
+
+  if (settings.showNearMissDebug) {
+    drawTrafficDebug();
+  }
+}
+
+function drawTrafficDebug() {
+  if (!trafficState.system) {
+    return;
+  }
+
+  context.save();
+  context.strokeStyle = "rgba(255, 200, 80, 0.55)";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.arc(car.position.x, car.position.y, TRAFFIC.nearMissRadius, 0, Math.PI * 2);
+  context.stroke();
+  for (const npc of trafficState.system.cars) {
+    context.beginPath();
+    context.arc(npc.pos.x, npc.pos.y, TRAFFIC.nearMissRadius, 0, Math.PI * 2);
+    context.stroke();
+    context.strokeStyle = "rgba(255, 80, 80, 0.45)";
+    context.beginPath();
+    context.arc(npc.pos.x, npc.pos.y, npc.radius, 0, Math.PI * 2);
+    context.stroke();
+    context.strokeStyle = "rgba(255, 200, 80, 0.55)";
+  }
+  context.restore();
+}
+
+function spawnNearMissSparks(origin) {
+  const count = 8;
+  for (let i = 0; i < count; i += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 90 + Math.random() * 120;
+    particlePool.spawn({
+      x: origin.x + Math.cos(angle) * 6,
+      y: origin.y + Math.sin(angle) * 6,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 0.18 + Math.random() * 0.12,
+      size: 2 + Math.random() * 1.6,
+      color: "rgb(255, 230, 190)",
+      alpha: 0.8,
+    });
+  }
 }
 
 function drawHud(renderCamera) {
@@ -517,6 +679,9 @@ function drawHud(renderCamera) {
     boostActive: car.boostActive,
     boostTimer: car.boostTimer,
     boostDuration: car.boostDuration,
+    trafficCount: settings.showTraffic ? trafficState.system?.cars.length || 0 : 0,
+    nearMissCount: scoreState.nearMissCount,
+    showNearMissDebug: settings.showNearMissDebug,
   });
 }
 
@@ -1121,7 +1286,12 @@ function drawLoadingScreen(message = "Loading...") {
 
 async function loadGameAssets() {
   const manifest = {
-    car: "assets/car.png",
+    playerCar: "assets/cars/player_car.png",
+    npcSedan: "assets/cars/npc_sedan.png",
+    npcCoupe: "assets/cars/npc_coupe.png",
+    npcMuscle: "assets/cars/npc_muscle.png",
+    npcTaxi: "assets/cars/npc_taxi.png",
+    npcBike: "assets/cars/npc_bike.png",
     asphalt: "assets/ashphalt_tile.png",
     skyline: "assets/miami_skyline.png",
     viceCity: "assets/vice_city_neon_sign.png",
@@ -1135,10 +1305,13 @@ async function loadGameAssets() {
   };
 
   assets = await loadAssets(manifest);
-  carImageReady = true;
   roadPattern = context.createPattern(assets.asphalt, "repeat");
   props = generateProps(track, 202602);
   boostPads = generateBoostPads(track, 90210);
+  trafficState.system = createTrafficSystem(track, 77123);
+  trafficState.carSprites = trafficState.system.cars.map(
+    (car) => ["npcSedan", "npcCoupe", "npcMuscle", "npcTaxi", "npcBike"][car.id % 5],
+  );
 }
 
 drawLoadingScreen("Loading assets...");
