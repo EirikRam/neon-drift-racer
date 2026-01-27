@@ -98,7 +98,9 @@ const context = canvas.getContext("2d");
 app.appendChild(canvas);
 
 let assets = null;
-let roadPattern = null;
+let asphaltPattern = null;
+const ROAD_PATTERN_SCALE = 0.6;
+let asphaltPatternScale = ROAD_PATTERN_SCALE;
 let props = [];
 let landmarks = [];
 let boostPads = [];
@@ -506,24 +508,24 @@ function drawTrack() {
   const outer = boundaries.outer;
 
   context.save();
-  context.beginPath();
-  context.moveTo(outer[0].x, outer[0].y);
-  for (let i = 1; i < outer.length; i += 1) {
-    context.lineTo(outer[i].x, outer[i].y);
-  }
-  for (let i = inner.length - 1; i >= 0; i -= 1) {
-    context.lineTo(inner[i].x, inner[i].y);
-  }
-  context.closePath();
-
   context.lineJoin = "round";
   context.lineCap = "round";
 
-  context.save();
-  context.clip();
-  context.fillStyle = roadPattern || "#121722";
-  context.fillRect(-5000, -5000, 10000, 10000);
-  context.restore();
+  // Road underlay
+  context.beginPath();
+  context.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i += 1) {
+    context.lineTo(points[i].x, points[i].y);
+  }
+  context.closePath();
+  context.strokeStyle = "#0f141e";
+  context.lineWidth = track.width * 2;
+  context.stroke();
+
+  // Asphalt pattern overlay
+  context.strokeStyle = asphaltPattern || "#121722";
+  context.lineWidth = track.width * 2;
+  context.stroke();
 
   context.strokeStyle = "rgba(120, 140, 170, 0.35)";
   context.lineWidth = 2;
@@ -851,6 +853,12 @@ function drawHud(renderCamera) {
         farParallax: SKYLINE_LAYERS.far.parallaxFactor,
       }
     : null;
+  const asphaltInfo = settings.showTrackDebug
+    ? {
+        ok: Boolean(asphaltPattern),
+        scale: asphaltPatternScale,
+      }
+    : null;
   const knockedCount =
     settings.showNearMissDebug && trafficState.system
       ? trafficState.system.cars.filter((npc) => npc.knockbackTimer > 0).length
@@ -879,6 +887,7 @@ function drawHud(renderCamera) {
     showTrackDebug: settings.showTrackDebug,
     districtName,
     trackDebugInfo,
+    asphaltInfo,
     skylineInfo,
     boostActive: car.boostActive,
     boostTimer: car.boostTimer,
@@ -1557,7 +1566,17 @@ async function loadGameAssets() {
   };
 
   assets = await loadAssets(manifest);
-  roadPattern = context.createPattern(assets.asphalt, "repeat");
+  asphaltPattern = context.createPattern(assets.asphalt, "repeat");
+  asphaltPatternScale = ROAD_PATTERN_SCALE;
+  if (asphaltPattern && asphaltPattern.setTransform) {
+    try {
+      asphaltPattern.setTransform(new DOMMatrix().scale(ROAD_PATTERN_SCALE));
+    } catch {
+      asphaltPatternScale = 1;
+    }
+  } else {
+    asphaltPatternScale = asphaltPattern ? 1 : 0;
+  }
   props = generateProps(track, 202602);
   landmarks = generateLandmarks(track, 5067);
   boostPads = generateBoostPads(track, 90210);

@@ -35,6 +35,7 @@ export function renderHUD(ctx, hudState) {
     showTrackDebug,
     districtName,
     trackDebugInfo,
+    asphaltInfo,
     skylineInfo,
     boostActive,
     boostTimer,
@@ -68,6 +69,7 @@ export function renderHUD(ctx, hudState) {
   const boostWidth = 160;
   const boostHeight = 10;
   const propDebugExtra = showPropDebug && propDistrictCounts ? 18 : 0;
+  const asphaltExtra = showTrackDebug && asphaltInfo ? 18 : 0;
   const boostRatio =
     boostActive && boostDuration > 0 ? boostTimer / boostDuration : 0;
   ctx.fillStyle = "rgba(90, 110, 140, 0.5)";
@@ -128,6 +130,17 @@ export function renderHUD(ctx, hudState) {
           : boostY + 70,
     );
   }
+  if (showTrackDebug && asphaltInfo) {
+    ctx.fillText(
+      `asphaltPattern: ${asphaltInfo.ok ? "OK" : "MISSING"}  scale ${asphaltInfo.scale.toFixed(2)}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 124 + propDebugExtra : 106)
+        : showPropDebug
+          ? boostY + 106 + propDebugExtra
+          : boostY + 88,
+    );
+  }
   if (showTrackDebug && skylineInfo?.currentKey) {
     const nextLabel = skylineInfo.nextKey ? ` -> ${skylineInfo.nextKey}` : "";
     const fadeLabel = skylineInfo.nextKey
@@ -137,20 +150,20 @@ export function renderHUD(ctx, hudState) {
       `Skyline: ${skylineInfo.currentKey}${nextLabel}${fadeLabel}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 124 + propDebugExtra : 106)
+        ? boostY + (showPropDebug ? 124 + propDebugExtra + asphaltExtra : 106 + asphaltExtra)
         : showPropDebug
-          ? boostY + 106 + propDebugExtra
-          : boostY + 88,
+          ? boostY + 106 + propDebugExtra + asphaltExtra
+          : boostY + 88 + asphaltExtra,
     );
     if (skylineInfo.farKey) {
       ctx.fillText(
         `Far: ${skylineInfo.farKey}  Parallax: ${skylineInfo.farParallax.toFixed(2)} / ${skylineInfo.nearParallax.toFixed(2)}`,
         16,
         showNearMissDebug
-          ? boostY + (showPropDebug ? 142 + propDebugExtra : 124)
+          ? boostY + (showPropDebug ? 142 + propDebugExtra + asphaltExtra : 124 + asphaltExtra)
           : showPropDebug
-            ? boostY + 124 + propDebugExtra
-            : boostY + 106,
+            ? boostY + 124 + propDebugExtra + asphaltExtra
+            : boostY + 106 + asphaltExtra,
       );
     }
   }
