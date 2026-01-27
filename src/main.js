@@ -3,13 +3,13 @@ import { createVec2, clamp, lerp } from "./math.js";
 import { ParticlePool } from "./particles.js";
 import { track, getSkylineKeyForDistrictId } from "./track.js";
 import { loadAssets } from "./assets.js";
-import { generateProps } from "./props.js";
+import { generateProps, generateLandmarks } from "./props.js";
 import { renderHUD, renderHelpOverlay } from "./ui.js";
 import { generateBoostPads, updateBoostPads } from "./boostpads.js";
 import { createScoreState, resetRun, updateScore, registerNearMiss, SCORE } from "./score.js";
 import { drawCarSprite, CAR_RENDER_SIZE } from "./carRender.js";
 import { createTrafficSystem } from "./traffic.js";
-import { drawSkyline as drawSkylineLayer, drawSkylineFallback } from "./skyline.js";
+import { drawSkylineLayer, drawSkylineFallback } from "./skyline.js";
 
 const VERSION = "v0.2.0";
 const FIXED_TIME_STEP = 1000 / 60;
@@ -100,6 +100,7 @@ app.appendChild(canvas);
 let assets = null;
 let roadPattern = null;
 let props = [];
+let landmarks = [];
 let boostPads = [];
 const scoreState = createScoreState();
 let useSprite = true;
@@ -144,6 +145,23 @@ const skylineState = {
   nextKey: null,
   fadeAlpha: 1,
   fadeSpeed: 1.2,
+};
+
+const SKYLINE_LAYERS = {
+  far: {
+    parallaxFactor: 0.12,
+    alpha: 0.38,
+    hazeStrength: 0.45,
+    yOffset: 0.16,
+    scale: 1,
+  },
+  near: {
+    parallaxFactor: 0.24,
+    alpha: 0.78,
+    hazeStrength: 0.15,
+    yOffset: 0.2,
+    scale: 1,
+  },
 };
 
 const state = {
@@ -351,19 +369,34 @@ function render(alpha) {
     const fallbackImage = assets ? assets.skyMetro : null;
     const pixelScale = canvas.width / Math.max(1, state.width);
     drawSkylineFallback(context);
-    drawSkylineLayer(context, renderCamera, fallbackImage, {
-      alpha: 0.9,
-      pixelScale,
-    });
-    drawSkylineLayer(context, renderCamera, currentImage || fallbackImage, {
-      alpha: 1,
-      pixelScale,
-    });
-    if (nextImage) {
-      drawSkylineLayer(context, renderCamera, nextImage, {
-        alpha: skylineState.fadeAlpha,
+    const farImage = fallbackImage || currentImage;
+    const nearImage = currentImage || fallbackImage;
+    if (farImage) {
+      drawSkylineLayer(context, renderCamera, farImage, {
+        ...SKYLINE_LAYERS.far,
         pixelScale,
       });
+    }
+    if (nearImage) {
+      const nearAlpha = SKYLINE_LAYERS.near.alpha;
+      if (nextImage) {
+        drawSkylineLayer(context, renderCamera, nearImage, {
+          ...SKYLINE_LAYERS.near,
+          alpha: nearAlpha * (1 - skylineState.fadeAlpha),
+          pixelScale,
+        });
+        drawSkylineLayer(context, renderCamera, nextImage, {
+          ...SKYLINE_LAYERS.near,
+          alpha: nearAlpha * skylineState.fadeAlpha,
+          pixelScale,
+        });
+      } else {
+        drawSkylineLayer(context, renderCamera, nearImage, {
+          ...SKYLINE_LAYERS.near,
+          alpha: nearAlpha,
+          pixelScale,
+        });
+      }
     }
   }
   context.translate(state.width / 2 - renderCamera.x, state.height / 2 - renderCamera.y);
@@ -372,6 +405,7 @@ function render(alpha) {
   drawTrack();
   drawBoostPads(boostPads);
   if (settings.showNeonProps) {
+    drawProps(landmarks);
     drawProps(props);
   }
   drawTrafficCars();
@@ -385,7 +419,7 @@ function render(alpha) {
     y: lerp(car.prevVel.y, car.vel.y, alpha),
   });
   if (settings.showPropDebug) {
-    drawPropDebug(props);
+    drawPropDebug(landmarks.concat(props));
   }
 
   if (settings.showGlow) {
@@ -396,6 +430,7 @@ function render(alpha) {
     }
     drawBoostPadGlow(boostPads);
     if (settings.showNeonProps) {
+      drawPropGlow(landmarks);
       drawPropGlow(props);
     }
     context.restore();
@@ -798,9 +833,9 @@ function drawHud(renderCamera) {
   const velDeg = ((car.velAngle * 180) / Math.PI + 360) % 360;
   const particleCount = particlePool.activeCount;
   const roadStatus = car.onRoad ? "On Road" : "Off Road";
-  const propCount = props.length;
+  const propCount = props.length + landmarks.length;
   const propDistrictCounts = settings.showPropDebug
-    ? countPropsByDistrict(props)
+    ? countPropsByDistrict(landmarks, props)
     : null;
   const districtName = settings.showTrackDebug
     ? track.getDistrictName(track.getProgressAlongTrack(car.position))
@@ -810,6 +845,9 @@ function drawHud(renderCamera) {
         currentKey: skylineState.currentKey,
         nextKey: skylineState.nextKey,
         fadeAlpha: skylineState.fadeAlpha,
+        farKey: skylineState.currentKey && assets ? assets.skyMetro ? "skyMetro" : skylineState.currentKey : null,
+        nearParallax: SKYLINE_LAYERS.near.parallaxFactor,
+        farParallax: SKYLINE_LAYERS.far.parallaxFactor,
       }
     : null;
   const knockedCount =
@@ -855,13 +893,19 @@ function lerpAngle(a, b, t) {
   return a + delta * t;
 }
 
-function countPropsByDistrict(propList) {
+function countPropsByDistrict(landmarkList, propList) {
   const counts = {
     beach: 0,
     downtown: 0,
     neon: 0,
     harbor: 0,
   };
+  for (let i = 0; i < landmarkList.length; i += 1) {
+    const district = landmarkList[i].districtId;
+    if (district && counts[district] !== undefined) {
+      counts[district] += 1;
+    }
+  }
   for (let i = 0; i < propList.length; i += 1) {
     const district = propList[i].districtId;
     if (district && counts[district] !== undefined) {
@@ -1312,6 +1356,12 @@ function drawPropDebug(propList) {
     context.beginPath();
     context.arc(prop.position.x, prop.position.y, radius, 0, Math.PI * 2);
     context.stroke();
+    if (settings.showTrackDebug && prop.isLandmark) {
+      context.fillStyle = "rgba(240, 250, 255, 0.85)";
+      context.font = "11px 'Segoe UI', system-ui, sans-serif";
+      context.textBaseline = "bottom";
+      context.fillText(prop.districtId, prop.position.x + 8, prop.position.y - 6);
+    }
   }
   context.restore();
 }
@@ -1485,6 +1535,7 @@ async function loadGameAssets() {
   assets = await loadAssets(manifest);
   roadPattern = context.createPattern(assets.asphalt, "repeat");
   props = generateProps(track, 202602);
+  landmarks = generateLandmarks(track, 5067);
   boostPads = generateBoostPads(track, 90210);
   trafficState.system = createTrafficSystem(track, 77123);
   trafficState.carSprites = trafficState.system.cars.map(

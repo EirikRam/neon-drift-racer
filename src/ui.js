@@ -130,6 +130,17 @@ export function renderHUD(ctx, hudState) {
           ? boostY + 88 + propDebugExtra
           : boostY + 70,
     );
+    if (skylineInfo.farKey) {
+      ctx.fillText(
+        `Far: ${skylineInfo.farKey}  Parallax: ${skylineInfo.farParallax.toFixed(2)} / ${skylineInfo.nearParallax.toFixed(2)}`,
+        16,
+        showNearMissDebug
+          ? boostY + (showPropDebug ? 124 + propDebugExtra : 106)
+          : showPropDebug
+            ? boostY + 106 + propDebugExtra
+            : boostY + 88,
+      );
+    }
   }
   ctx.restore();
 }

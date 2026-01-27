@@ -88,6 +88,15 @@ const ROADSIDE_STEP = 8;
 const CLUSTER_MAX_TOTAL = 10;
 const CLUSTER_SIZE_MIN = 2;
 const CLUSTER_SIZE_MAX = 4;
+const LANDMARK_MARGIN = 260;
+const LANDMARK_MIN_SEPARATION = 1200;
+
+const LANDMARKS = [
+  { districtId: "beach", propKey: "palmTree", t: 0.12 },
+  { districtId: "downtown", propKey: "artDecoHotel", t: 0.37 },
+  { districtId: "neon", propKey: "neonSkull", t: 0.62 },
+  { districtId: "harbor", propKey: "neonDistrict", t: 0.87 },
+];
 
 const DISTRICT_BUDGETS = {
   beach: 8,
@@ -264,6 +273,16 @@ function buildProp(catalogKey, position, rng, districtId) {
     flickerSeed: rng() * 1000,
     sizeClass: entry.sizeClass,
     districtId,
+    isLandmark: false,
+  };
+}
+
+function buildLandmark(catalogKey, position, rng, districtId) {
+  const prop = buildProp(catalogKey, position, rng, districtId);
+  return {
+    ...prop,
+    isLandmark: true,
+    scale: prop.scale * 1.05,
   };
 }
 
@@ -441,3 +460,60 @@ export function generateProps(track, seed = 1337) {
 
   return props;
 }
+
+export const generateLandmarks = (track, seed = 2468) => {
+  const rng = mulberry32(seed);
+  const landmarks = [];
+  const centroid = getTrackCentroid(track.centerline);
+
+  for (let i = 0; i < LANDMARKS.length; i += 1) {
+    const entry = LANDMARKS[i];
+    const sample = track.getPointAtProgress(entry.t);
+    const outwardProbe = createVec2(
+      sample.point.x + sample.normal.x * 20,
+      sample.point.y + sample.normal.y * 20,
+    );
+    const inwardProbe = createVec2(
+      sample.point.x - sample.normal.x * 20,
+      sample.point.y - sample.normal.y * 20,
+    );
+    const outwardDist =
+      (outwardProbe.x - centroid.x) ** 2 +
+      (outwardProbe.y - centroid.y) ** 2;
+    const inwardDist =
+      (inwardProbe.x - centroid.x) ** 2 +
+      (inwardProbe.y - centroid.y) ** 2;
+    const outwardNormal =
+      outwardDist > inwardDist
+        ? sample.normal
+        : { x: -sample.normal.x, y: -sample.normal.y };
+
+    const offset = track.width + SAFE_MARGIN + LANDMARK_MARGIN + rng() * 80;
+    const position = createVec2(
+      sample.point.x + outwardNormal.x * offset,
+      sample.point.y + outwardNormal.y * offset,
+    );
+    if (!isOutsideRoad(track, position, SAFE_MARGIN + LANDMARK_MARGIN, INNER_BAND_REJECT)) {
+      continue;
+    }
+
+    let tooClose = false;
+    for (let j = 0; j < landmarks.length; j += 1) {
+      const other = landmarks[j];
+      const dx = other.position.x - position.x;
+      const dy = other.position.y - position.y;
+      if (dx * dx + dy * dy < LANDMARK_MIN_SEPARATION ** 2) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) {
+      continue;
+    }
+
+    const landmark = buildLandmark(entry.propKey, position, rng, entry.districtId);
+    landmarks.push(landmark);
+  }
+
+  return landmarks;
+};
