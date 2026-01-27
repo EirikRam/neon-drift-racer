@@ -840,6 +840,7 @@ function drawHud(renderCamera) {
   const districtName = settings.showTrackDebug
     ? track.getDistrictName(track.getProgressAlongTrack(car.position))
     : null;
+  const trackDebugInfo = settings.showTrackDebug ? track.debugInfo : null;
   const skylineInfo = settings.showTrackDebug
     ? {
         currentKey: skylineState.currentKey,
@@ -877,6 +878,7 @@ function drawHud(renderCamera) {
     cameraY: renderCamera.y,
     showTrackDebug: settings.showTrackDebug,
     districtName,
+    trackDebugInfo,
     skylineInfo,
     boostActive: car.boostActive,
     boostTimer: car.boostTimer,
@@ -1393,6 +1395,28 @@ function drawTrackDebug(renderCarPos) {
       context.beginPath();
       context.arc(marker.point.x, marker.point.y, 6, 0, Math.PI * 2);
       context.fill();
+    }
+  }
+
+  if (track.waypoints?.length) {
+    context.fillStyle = "rgba(230, 240, 255, 0.85)";
+    context.strokeStyle = "rgba(230, 240, 255, 0.4)";
+    context.font = "11px 'Segoe UI', system-ui, sans-serif";
+    context.textBaseline = "middle";
+    for (let i = 0; i < track.waypoints.length; i += 1) {
+      const wp = track.waypoints[i];
+      const isSharp = track.sharpCorners?.includes(i);
+      if (isSharp) {
+        context.strokeStyle = "rgba(255, 100, 120, 0.75)";
+        context.fillStyle = "rgba(255, 100, 120, 0.9)";
+      } else {
+        context.strokeStyle = "rgba(230, 240, 255, 0.4)";
+        context.fillStyle = "rgba(230, 240, 255, 0.85)";
+      }
+      context.beginPath();
+      context.arc(wp.x, wp.y, isSharp ? 6 : 5, 0, Math.PI * 2);
+      context.stroke();
+      context.fillText(String(i), wp.x + 8, wp.y);
     }
   }
 

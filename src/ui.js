@@ -34,6 +34,7 @@ export function renderHUD(ctx, hudState) {
     cameraY,
     showTrackDebug,
     districtName,
+    trackDebugInfo,
     skylineInfo,
     boostActive,
     boostTimer,
@@ -116,6 +117,17 @@ export function renderHUD(ctx, hudState) {
           : boostY + 52,
     );
   }
+  if (showTrackDebug && trackDebugInfo) {
+    ctx.fillText(
+      `Track: retries ${trackDebugInfo.retryCount}  fallback ${trackDebugInfo.fallbackUsed ? "YES" : "NO"}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 106 + propDebugExtra : 88)
+        : showPropDebug
+          ? boostY + 88 + propDebugExtra
+          : boostY + 70,
+    );
+  }
   if (showTrackDebug && skylineInfo?.currentKey) {
     const nextLabel = skylineInfo.nextKey ? ` -> ${skylineInfo.nextKey}` : "";
     const fadeLabel = skylineInfo.nextKey
@@ -125,20 +137,20 @@ export function renderHUD(ctx, hudState) {
       `Skyline: ${skylineInfo.currentKey}${nextLabel}${fadeLabel}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 106 + propDebugExtra : 88)
+        ? boostY + (showPropDebug ? 124 + propDebugExtra : 106)
         : showPropDebug
-          ? boostY + 88 + propDebugExtra
-          : boostY + 70,
+          ? boostY + 106 + propDebugExtra
+          : boostY + 88,
     );
     if (skylineInfo.farKey) {
       ctx.fillText(
         `Far: ${skylineInfo.farKey}  Parallax: ${skylineInfo.farParallax.toFixed(2)} / ${skylineInfo.nearParallax.toFixed(2)}`,
         16,
         showNearMissDebug
-          ? boostY + (showPropDebug ? 124 + propDebugExtra : 106)
+          ? boostY + (showPropDebug ? 142 + propDebugExtra : 124)
           : showPropDebug
-            ? boostY + 106 + propDebugExtra
-            : boostY + 88,
+            ? boostY + 124 + propDebugExtra
+            : boostY + 106,
       );
     }
   }
