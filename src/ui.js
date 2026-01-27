@@ -1,7 +1,7 @@
-const ON_COLOR = "rgba(120, 255, 220, 0.95)";
-const OFF_COLOR = "rgba(160, 170, 190, 0.85)";
-const TEXT_COLOR = "rgba(235, 242, 255, 0.92)";
-const HEADER_COLOR = "rgba(140, 200, 255, 0.95)";
+const ON_COLOR = "rgba(190, 255, 235, 0.98)";
+const OFF_COLOR = "rgba(210, 220, 235, 0.9)";
+const TEXT_COLOR = "rgba(255, 255, 255, 0.98)";
+const HEADER_COLOR = "rgba(200, 235, 255, 0.98)";
 
 function formatToggle(value) {
   return value ? "ON" : "OFF";
@@ -44,12 +44,28 @@ export function renderHUD(ctx, hudState) {
     nearMissCount,
     showNearMissDebug,
     knockedCount,
+    trafficStats,
   } = hudState;
 
+  const boostY = 270;
+  const boostWidth = 160;
+  const boostHeight = 10;
+  const propDebugExtra = showPropDebug && propDistrictCounts ? 18 : 0;
+  const asphaltExtra = showTrackDebug && asphaltInfo ? 18 : 0;
+  const trafficDebugExtra =
+    showNearMissDebug && trafficStats
+      ? trafficStats.spawnStats
+        ? 126
+        : 36
+      : 0;
   ctx.save();
+  const boostRatio =
+    boostActive && boostDuration > 0 ? boostTimer / boostDuration : 0;
   ctx.fillStyle = TEXT_COLOR;
   ctx.font = "14px 'Segoe UI', system-ui, sans-serif";
   ctx.textBaseline = "top";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+  ctx.shadowBlur = 4;
   ctx.fillText(`Score: ${Math.floor(score)}`, 16, 12);
   ctx.fillText(`Best: ${Math.floor(bestScore)}`, 16, 30);
   ctx.fillText(`Multiplier: x${multiplier.toFixed(2)}`, 16, 48);
@@ -64,14 +80,6 @@ export function renderHUD(ctx, hudState) {
   ctx.fillText(`Trail Rate: ${trailRate.toFixed(1)} / s`, 16, 214);
   ctx.fillText(`Road: ${roadStatus}`, 16, 232);
   ctx.fillText(`Collisions: ${showCollisions ? "ON" : "OFF"}`, 16, 250);
-
-  const boostY = 270;
-  const boostWidth = 160;
-  const boostHeight = 10;
-  const propDebugExtra = showPropDebug && propDistrictCounts ? 18 : 0;
-  const asphaltExtra = showTrackDebug && asphaltInfo ? 18 : 0;
-  const boostRatio =
-    boostActive && boostDuration > 0 ? boostTimer / boostDuration : 0;
   ctx.fillStyle = "rgba(90, 110, 140, 0.5)";
   ctx.fillRect(16, boostY, boostWidth, boostHeight);
   if (boostRatio > 0) {
@@ -98,12 +106,59 @@ export function renderHUD(ctx, hudState) {
       16,
       showPropDebug ? boostY + 52 + propDebugExtra : boostY + 34,
     );
+    if (trafficStats) {
+      ctx.fillText(
+        `Traffic setting: ${trafficStats.settingCount}  Active: ${trafficStats.activeCount}  Avg gap: ${trafficStats.avgSpacing.toFixed(0)}`,
+        16,
+        showPropDebug ? boostY + 70 + propDebugExtra : boostY + 52,
+      );
+      if (trafficStats.generatedCount !== undefined) {
+        ctx.fillText(
+          `Generated: ${trafficStats.generatedCount}  Rendered: ${trafficStats.renderStats?.rendered ?? 0}`,
+          16,
+          showPropDebug ? boostY + 88 + propDebugExtra : boostY + 70,
+        );
+      }
+      if (trafficStats.spawnStats) {
+        const stats = trafficStats.spawnStats;
+        ctx.fillText(
+          `Spawn: ${stats.accepted}/${stats.attempted}  rej P:${stats.rejectedProgress} O:${stats.rejectedOverlap} R:${stats.rejectedOffRoad}`,
+          16,
+          showPropDebug ? boostY + 106 + propDebugExtra : boostY + 88,
+        );
+        ctx.fillText(
+          `Bubble: ${stats.bubbleFound}/${stats.bubbleTarget}  added ${stats.bubbleCreated}  other ${stats.rejectedOther}`,
+          16,
+          showPropDebug ? boostY + 124 + propDebugExtra : boostY + 106,
+        );
+        if (trafficStats.debugInfo) {
+          const info = trafficStats.debugInfo;
+          ctx.fillText(
+            `Target: ${info.targetCount}  Settings: ${info.settingsTrafficCount}/${info.settingsMaxCount}  Lanes: ${info.centersCount}`,
+            16,
+            showPropDebug ? boostY + 142 + propDebugExtra : boostY + 124,
+          );
+          ctx.fillText(
+            `LaneMax: ${info.laneMax.toFixed(1)}  Width: ${info.trackWidth.toFixed(1)}  Cap:${info.laneMaxCapActive ? "YES" : "NO"}  Sep:${info.minProgressSep.toFixed(3)}`,
+            16,
+            showPropDebug ? boostY + 160 + propDebugExtra : boostY + 142,
+          );
+        }
+        if (trafficStats.renderStats) {
+          ctx.fillText(
+            `Render skips: off ${trafficStats.renderStats.skippedDisabled}  noAssets ${trafficStats.renderStats.skippedNoAssets}  noSprite ${trafficStats.renderStats.skippedMissingSprite}`,
+            16,
+            showPropDebug ? boostY + 178 + propDebugExtra : boostY + 160,
+          );
+        }
+      }
+    }
   }
   ctx.fillText(
     `Camera: ${cameraX.toFixed(1)}, ${cameraY.toFixed(1)}`,
     16,
     showNearMissDebug
-      ? boostY + (showPropDebug ? 70 + propDebugExtra : 52)
+      ? boostY + (showPropDebug ? 70 + propDebugExtra + trafficDebugExtra : 52 + trafficDebugExtra)
       : showPropDebug
         ? boostY + 52 + propDebugExtra
         : boostY + 34,
@@ -113,7 +168,7 @@ export function renderHUD(ctx, hudState) {
       `District: ${districtName}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 88 + propDebugExtra : 70)
+        ? boostY + (showPropDebug ? 88 + propDebugExtra + trafficDebugExtra : 70 + trafficDebugExtra)
         : showPropDebug
           ? boostY + 70 + propDebugExtra
           : boostY + 52,
@@ -124,7 +179,7 @@ export function renderHUD(ctx, hudState) {
       `Track: retries ${trackDebugInfo.retryCount}  fallback ${trackDebugInfo.fallbackUsed ? "YES" : "NO"}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 106 + propDebugExtra : 88)
+        ? boostY + (showPropDebug ? 106 + propDebugExtra + trafficDebugExtra : 88 + trafficDebugExtra)
         : showPropDebug
           ? boostY + 88 + propDebugExtra
           : boostY + 70,
@@ -135,7 +190,7 @@ export function renderHUD(ctx, hudState) {
       `asphaltPattern: ${asphaltInfo.ok ? "OK" : "MISSING"}  scale ${asphaltInfo.scale.toFixed(2)}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 124 + propDebugExtra : 106)
+        ? boostY + (showPropDebug ? 124 + propDebugExtra + trafficDebugExtra : 106 + trafficDebugExtra)
         : showPropDebug
           ? boostY + 106 + propDebugExtra
           : boostY + 88,
@@ -150,7 +205,7 @@ export function renderHUD(ctx, hudState) {
       `Skyline: ${skylineInfo.currentKey}${nextLabel}${fadeLabel}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 124 + propDebugExtra + asphaltExtra : 106 + asphaltExtra)
+        ? boostY + (showPropDebug ? 124 + propDebugExtra + asphaltExtra + trafficDebugExtra : 106 + asphaltExtra + trafficDebugExtra)
         : showPropDebug
           ? boostY + 106 + propDebugExtra + asphaltExtra
           : boostY + 88 + asphaltExtra,
@@ -160,7 +215,7 @@ export function renderHUD(ctx, hudState) {
         `Far: ${skylineInfo.farKey}  Parallax: ${skylineInfo.farParallax.toFixed(2)} / ${skylineInfo.nearParallax.toFixed(2)}`,
         16,
         showNearMissDebug
-          ? boostY + (showPropDebug ? 142 + propDebugExtra + asphaltExtra : 124 + asphaltExtra)
+          ? boostY + (showPropDebug ? 142 + propDebugExtra + asphaltExtra + trafficDebugExtra : 124 + asphaltExtra + trafficDebugExtra)
           : showPropDebug
             ? boostY + 124 + propDebugExtra + asphaltExtra
             : boostY + 106 + asphaltExtra,

@@ -140,6 +140,7 @@ const trafficState = {
   impactCooldown: 0,
   sparkCooldown: 0,
   carSprites: [],
+  renderStats: null,
 };
 
 const skylineState = {
@@ -764,15 +765,47 @@ function safeNormalize(x, y) {
 }
 
 function drawTrafficCars() {
-  if (!settings.showTraffic || !trafficState.system || !assets) {
+  const system = trafficState.system;
+  const cars = system?.cars || [];
+  if (!settings.showTraffic) {
+    trafficState.renderStats = {
+      total: cars.length,
+      rendered: 0,
+      skippedDisabled: cars.length,
+      skippedNoAssets: 0,
+      skippedMissingSprite: 0,
+    };
+    return;
+  }
+  if (!system) {
+    trafficState.renderStats = {
+      total: 0,
+      rendered: 0,
+      skippedDisabled: 0,
+      skippedNoAssets: 0,
+      skippedMissingSprite: 0,
+    };
+    return;
+  }
+  if (!assets) {
+    trafficState.renderStats = {
+      total: cars.length,
+      rendered: 0,
+      skippedDisabled: 0,
+      skippedNoAssets: cars.length,
+      skippedMissingSprite: 0,
+    };
     return;
   }
 
-  for (let i = 0; i < trafficState.system.cars.length; i += 1) {
-    const npc = trafficState.system.cars[i];
+  let rendered = 0;
+  let missingSprite = 0;
+  for (let i = 0; i < cars.length; i += 1) {
+    const npc = cars[i];
     const spriteKey = trafficState.carSprites[i];
     const sprite = assets[spriteKey];
-    if (!sprite) {
+    if (useSprite && !sprite) {
+      missingSprite += 1;
       continue;
     }
     if (useSprite) {
@@ -780,7 +813,15 @@ function drawTrafficCars() {
     } else {
       drawCarPlaceholder(npc.pos, npc.heading);
     }
+    rendered += 1;
   }
+  trafficState.renderStats = {
+    total: cars.length,
+    rendered,
+    skippedDisabled: 0,
+    skippedNoAssets: 0,
+    skippedMissingSprite: missingSprite,
+  };
 
   if (settings.showNearMissDebug) {
     drawTrafficDebug();
@@ -859,6 +900,9 @@ function drawHud(renderCamera) {
         scale: asphaltPatternScale,
       }
     : null;
+  const trafficStats = settings.showNearMissDebug
+    ? getTrafficStats(track, trafficState.system, trafficState.renderStats)
+    : null;
   const knockedCount =
     settings.showNearMissDebug && trafficState.system
       ? trafficState.system.cars.filter((npc) => npc.knockbackTimer > 0).length
@@ -896,12 +940,69 @@ function drawHud(renderCamera) {
     nearMissCount: scoreState.nearMissCount,
     showNearMissDebug: settings.showNearMissDebug,
     knockedCount,
+    trafficStats,
   });
 }
 
 function lerpAngle(a, b, t) {
   const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
   return a + delta * t;
+}
+
+function getTrafficStats(trackRef, system, renderStats) {
+  if (!system) {
+    return null;
+  }
+  const cars = system.cars;
+  if (!cars.length) {
+    return {
+      settingCount: system.settings.trafficCount,
+      activeCount: 0,
+      avgSpacing: 0,
+      generatedCount: system.spawnStats?.generatedCount ?? 0,
+      renderStats,
+      spawnStats: system.spawnStats,
+    };
+  }
+  const byLane = new Map();
+  for (const carEntity of cars) {
+    const list = byLane.get(carEntity.laneIndex) || [];
+    list.push(carEntity);
+    byLane.set(carEntity.laneIndex, list);
+  }
+  let totalGap = 0;
+  let gapCount = 0;
+  for (const list of byLane.values()) {
+    list.sort((a, b) => a.progress - b.progress);
+    for (let i = 0; i < list.length; i += 1) {
+      const carEntity = list[i];
+      const ahead = list[(i + 1) % list.length];
+      const gapProgress = (ahead.progress - carEntity.progress + 1) % 1;
+      totalGap += gapProgress * trackRef.totalLength;
+      gapCount += 1;
+    }
+  }
+  return {
+    settingCount: system.settings.trafficCount,
+    activeCount: cars.length,
+    avgSpacing: gapCount ? totalGap / gapCount : 0,
+    generatedCount: system.spawnStats?.generatedCount ?? cars.length,
+    renderStats,
+    spawnStats: system.spawnStats,
+    debugInfo: system.spawnStats
+      ? {
+          settingsTrafficCount: system.spawnStats.settingsTrafficCount,
+          settingsMaxCount: system.spawnStats.settingsMaxCount,
+          targetCount: system.spawnStats.targetCount,
+          laneMax: system.spawnStats.laneMax,
+          trackWidth: system.spawnStats.trackWidth,
+          laneMargin: system.spawnStats.laneMargin,
+          laneMaxCapActive: system.spawnStats.laneMaxCapActive,
+          centersCount: system.spawnStats.centersCount,
+          minProgressSep: system.spawnStats.minProgressSep,
+        }
+      : null,
+  };
 }
 
 function countPropsByDistrict(landmarkList, propList) {

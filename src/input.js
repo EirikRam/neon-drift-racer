@@ -49,6 +49,10 @@ function handleKeyDown(event) {
     return;
   }
 
+  if (key === "F1" || (key === "Slash" && event.shiftKey)) {
+    event.preventDefault();
+  }
+
   if (!down.has(key)) {
     pressed.add(key);
   }
