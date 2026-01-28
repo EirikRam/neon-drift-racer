@@ -54,6 +54,9 @@ export function renderHUD(ctx, hudState) {
     lapProgressUnwrapped,
     gateD,
     gateCrossed,
+    racePhase,
+    runTimerSeconds,
+    screenWidth,
   } = hudState;
 
   const boostY = 330;
@@ -94,6 +97,15 @@ export function renderHUD(ctx, hudState) {
   ctx.fillText(`Lap: ${(lapProgress * 100).toFixed(0)}%`, 16, 268);
   ctx.fillText(`Start T: ${startT.toFixed(3)}`, 16, 286);
   ctx.fillText(`Collisions: ${showCollisions ? "ON" : "OFF"}`, 16, 304);
+  if (racePhase === "RACING" && runTimerSeconds !== null) {
+    ctx.save();
+    ctx.font = "22px 'Segoe UI', system-ui, sans-serif";
+    ctx.fillStyle = "rgba(240, 250, 255, 0.95)";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(formatTime(runTimerSeconds), screenWidth / 2, 10);
+    ctx.restore();
+  }
   ctx.fillStyle = "rgba(90, 110, 140, 0.5)";
   ctx.fillRect(16, boostY, boostWidth, boostHeight);
   if (boostRatio > 0) {
@@ -271,6 +283,100 @@ export function renderHUD(ctx, hudState) {
     }
   }
   ctx.restore();
+}
+
+export function drawCenterOverlay(ctx, overlayState) {
+  const { text, screenWidth, screenHeight, style } = overlayState;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const centerX = screenWidth / 2;
+  const centerY = screenHeight / 2;
+  const bandHeight = Math.max(90, screenHeight * 0.12);
+  ctx.fillStyle = "rgba(6, 8, 16, 0.55)";
+  ctx.fillRect(0, centerY - bandHeight / 2, screenWidth, bandHeight);
+  const fontSize =
+    style === "countdown"
+      ? Math.min(140, screenWidth * 0.18)
+      : Math.min(110, screenWidth * 0.14);
+  ctx.font = `700 ${fontSize}px 'Segoe UI', system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = Math.max(6, fontSize * 0.08);
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+  ctx.fillStyle = "rgba(255, 240, 220, 0.98)";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.6)";
+  ctx.shadowBlur = 18;
+  ctx.strokeText(text, centerX, centerY);
+  ctx.fillText(text, centerX, centerY);
+  ctx.restore();
+}
+
+export function drawFinishPanel(ctx, stats) {
+  if (!stats.showPanel) {
+    return;
+  }
+  const {
+    screenWidth,
+    screenHeight,
+    elapsed,
+    score,
+    bestScore,
+    bestTime,
+    newBestScore,
+    newBestTime,
+  } = stats;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const panelWidth = Math.min(520, screenWidth * 0.7);
+  const panelHeight = 220;
+  const x = (screenWidth - panelWidth) / 2;
+  const y = screenHeight * 0.56;
+  ctx.fillStyle = "rgba(6, 8, 18, 0.82)";
+  ctx.strokeStyle = "rgba(120, 140, 180, 0.5)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.rect(x, y, panelWidth, panelHeight);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "rgba(240, 250, 255, 0.95)";
+  ctx.font = "20px 'Segoe UI', system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const padding = 20;
+  const line = 28;
+  ctx.fillText(`Time: ${formatTime(elapsed)}`, x + padding, y + padding);
+  ctx.fillText(`Score: ${Math.floor(score)}`, x + padding, y + padding + line);
+  ctx.fillText(
+    `Best Time: ${bestTime === null ? "--:--.--" : formatTime(bestTime)}`,
+    x + padding,
+    y + padding + line * 2,
+  );
+  ctx.fillText(
+    `Best Score: ${Math.floor(bestScore)}`,
+    x + padding,
+    y + padding + line * 3,
+  );
+  if (newBestTime || newBestScore) {
+    ctx.fillStyle = "rgba(120, 255, 220, 0.95)";
+    ctx.font = "bold 18px 'Segoe UI', system-ui, sans-serif";
+    ctx.fillText("NEW BEST!", x + padding, y + padding + line * 4);
+  }
+  ctx.fillStyle = "rgba(210, 220, 240, 0.9)";
+  ctx.font = "16px 'Segoe UI', system-ui, sans-serif";
+  ctx.fillText("Press R to Restart", x + padding, y + panelHeight - 40);
+  ctx.restore();
+}
+
+function formatTime(seconds) {
+  const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  const minutes = Math.floor(safe / 60);
+  const secs = safe - minutes * 60;
+  const whole = Math.floor(secs);
+  const frac = Math.floor((secs - whole) * 100);
+  const minLabel = String(minutes).padStart(2, "0");
+  const secLabel = String(whole).padStart(2, "0");
+  const fracLabel = String(frac).padStart(2, "0");
+  return `${minLabel}:${secLabel}.${fracLabel}`;
 }
 
 export function renderHelpOverlay(ctx, uiState) {

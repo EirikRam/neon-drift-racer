@@ -4,7 +4,7 @@ import { ParticlePool } from "./particles.js";
 import { track, getSkylineKeyForDistrictId } from "./track.js";
 import { loadAssets } from "./assets.js";
 import { generateProps, generateLandmarks } from "./props.js";
-import { renderHUD, renderHelpOverlay } from "./ui.js";
+import { renderHUD, renderHelpOverlay, drawCenterOverlay, drawFinishPanel } from "./ui.js";
 import { generateBoostPads, updateBoostPads } from "./boostpads.js";
 import { createScoreState, resetRun, updateScore, registerNearMiss, SCORE } from "./score.js";
 import { drawCarSprite, CAR_RENDER_SIZE } from "./carRender.js";
@@ -91,6 +91,26 @@ const BOOST = {
   triggerTrailBurst: 6,
 };
 
+const RACE_PHASE = {
+  PRE_RACE: "PRE_RACE",
+  COUNTDOWN: "COUNTDOWN",
+  GO_FLASH: "GO_FLASH",
+  RACING: "RACING",
+  FINISHED: "FINISHED",
+};
+
+const RACE_TIMING = {
+  autoStartDelay: 0.5,
+  countdownStep: 1.0,
+  goFlashDuration: 0.6,
+  finishSplashDuration: 1.5,
+};
+
+const STORAGE_KEYS = {
+  bestScore: "ndr_bestScore",
+  bestTime: "ndr_bestTime",
+};
+
 const app = document.getElementById("app");
 const canvas = document.createElement("canvas");
 const context = canvas.getContext("2d");
@@ -141,6 +161,13 @@ const trafficState = {
   sparkCooldown: 0,
   carSprites: [],
   renderStats: null,
+};
+
+const bestRunState = {
+  bestScore: 0,
+  bestTime: null,
+  newBestScore: false,
+  newBestTime: false,
 };
 
 const skylineState = {
@@ -206,6 +233,7 @@ const camera = {
 };
 
 const raceState = {
+  racePhase: RACE_PHASE.PRE_RACE,
   raceArmed: false,
   raceFinished: false,
   lastProgress: null,
@@ -213,6 +241,11 @@ const raceState = {
   prevGateD: null,
   gateD: null,
   gateCrossed: false,
+  countdownStartTime: null,
+  goStartTime: null,
+  finishStartTime: null,
+  runStartTime: null,
+  runElapsed: 0,
 };
 
 function resizeCanvas() {
@@ -231,8 +264,12 @@ function resizeCanvas() {
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
+bestRunState.bestScore = loadStoredBestScore();
+bestRunState.bestTime = loadStoredBestTime();
+
 function updateFixed() {
   const dt = FIXED_TIME_STEP / 1000;
+  const now = performance.now();
 
   car.prevPosition.x = car.position.x;
   car.prevPosition.y = car.position.y;
@@ -303,8 +340,9 @@ function updateFixed() {
     settings.showHelp = !settings.showHelp;
   }
 
+  updateRacePhase(now);
   updateBoostState(dt);
-  updateCarPhysics(dt);
+  updateCarPhysics(dt, raceState.racePhase !== RACE_PHASE.RACING);
   updateSkylineState(dt);
   updateTraffic(dt);
   const impact = resolveTrackCollision();
@@ -321,15 +359,17 @@ function updateFixed() {
   if (impact && settings.showParticles) {
     spawnImpactSparks(impact);
   }
-  updateScore(
-    scoreState,
-    car,
-    track,
-    dt,
-    car.boostActive,
-    impact ? impact.strength : 0,
-  );
-  updateRaceProgress();
+  if (raceState.racePhase === RACE_PHASE.RACING) {
+    updateScore(
+      scoreState,
+      car,
+      track,
+      dt,
+      car.boostActive,
+      impact ? impact.strength : 0,
+    );
+  }
+  updateRaceProgress(now);
 
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
@@ -469,6 +509,23 @@ function render(alpha) {
     showNearMissDebug: settings.showNearMissDebug,
     showBully: settings.enableBully,
   });
+  const overlayState = getOverlayState();
+  if (overlayState) {
+    drawCenterOverlay(context, overlayState);
+  }
+  if (raceState.racePhase === RACE_PHASE.FINISHED) {
+    drawFinishPanel(context, {
+      screenWidth: state.width,
+      screenHeight: state.height,
+      elapsed: raceState.runElapsed,
+      score: scoreState.runScore,
+      bestScore: bestRunState.bestScore,
+      bestTime: bestRunState.bestTime,
+      newBestScore: bestRunState.newBestScore,
+      newBestTime: bestRunState.newBestTime,
+      showPanel: shouldShowFinishPanel(),
+    });
+  }
 }
 
 function drawBackgroundGrid(cameraPos) {
@@ -910,6 +967,9 @@ function drawHud(renderCamera) {
     ? clamp(raceState.lapProgressUnwrapped, 0, 1)
     : 0;
   const progressT = track.getProgressAlongTrack(car.position);
+  const runTimerSeconds = raceState.racePhase === RACE_PHASE.RACING
+    ? raceState.runElapsed
+    : null;
 
   renderHUD(context, {
     fps: state.fps,
@@ -953,6 +1013,9 @@ function drawHud(renderCamera) {
     lapProgressUnwrapped: raceState.lapProgressUnwrapped,
     gateD: raceState.gateD,
     gateCrossed: raceState.gateCrossed,
+    racePhase: raceState.racePhase,
+    runTimerSeconds,
+    screenWidth: state.width,
   });
 }
 
@@ -1043,15 +1106,15 @@ function smallestAngleBetween(a, b) {
   return Math.atan2(Math.sin(b - a), Math.cos(b - a));
 }
 
-function updateCarPhysics(dt) {
-  const throttle = isDown("KeyW") || isDown("ArrowUp");
-  const brake = isDown("KeyS") || isDown("ArrowDown");
-  const steerLeft = isDown("KeyA") || isDown("ArrowLeft");
-  const steerRight = isDown("KeyD") || isDown("ArrowRight");
+function updateCarPhysics(dt, controlsLocked = false) {
+  const throttle = !controlsLocked && (isDown("KeyW") || isDown("ArrowUp"));
+  const brake = !controlsLocked && (isDown("KeyS") || isDown("ArrowDown"));
+  const steerLeft = !controlsLocked && (isDown("KeyA") || isDown("ArrowLeft"));
+  const steerRight = !controlsLocked && (isDown("KeyD") || isDown("ArrowRight"));
 
   car.throttleInput = clamp((throttle ? 1 : 0) - (brake ? 1 : 0), -1, 1);
   car.steerInput = clamp((steerRight ? 1 : 0) - (steerLeft ? 1 : 0), -1, 1);
-  car.handbrake = isDown("Space");
+  car.handbrake = !controlsLocked && isDown("Space");
 
   const onRoad = track.isOnRoad(car.position);
   car.onRoad = onRoad;
@@ -1239,7 +1302,134 @@ function updateBoostState(dt) {
   }
 }
 
-function updateRaceProgress() {
+function updateRacePhase(now) {
+  if (raceState.racePhase === RACE_PHASE.PRE_RACE) {
+    if (!raceState.countdownStartTime) {
+      raceState.countdownStartTime = now + RACE_TIMING.autoStartDelay * 1000;
+      return;
+    }
+    if (now >= raceState.countdownStartTime) {
+      raceState.racePhase = RACE_PHASE.COUNTDOWN;
+      raceState.countdownStartTime = now;
+    }
+  } else if (raceState.racePhase === RACE_PHASE.COUNTDOWN) {
+    const elapsed = (now - raceState.countdownStartTime) / 1000;
+    if (elapsed >= RACE_TIMING.countdownStep * 3) {
+      raceState.racePhase = RACE_PHASE.GO_FLASH;
+      raceState.goStartTime = now;
+    }
+  } else if (raceState.racePhase === RACE_PHASE.GO_FLASH) {
+    const elapsed = (now - raceState.goStartTime) / 1000;
+    if (elapsed >= RACE_TIMING.goFlashDuration) {
+      raceState.racePhase = RACE_PHASE.RACING;
+      raceState.runStartTime = now;
+      raceState.runElapsed = 0;
+    }
+  } else if (raceState.racePhase === RACE_PHASE.RACING) {
+    raceState.runElapsed = getRunElapsedSeconds(now);
+  }
+}
+
+function getRunElapsedSeconds(now) {
+  if (!raceState.runStartTime) {
+    return 0;
+  }
+  return Math.max(0, (now - raceState.runStartTime) / 1000);
+}
+
+function getOverlayState() {
+  const { racePhase } = raceState;
+  if (racePhase === RACE_PHASE.COUNTDOWN) {
+    const elapsed = (performance.now() - raceState.countdownStartTime) / 1000;
+    const index = Math.floor(elapsed / RACE_TIMING.countdownStep);
+    const count = 3 - index;
+    if (count > 0) {
+      return {
+        text: String(count),
+        screenWidth: state.width,
+        screenHeight: state.height,
+        style: "countdown",
+      };
+    }
+    return null;
+  }
+  if (racePhase === RACE_PHASE.GO_FLASH) {
+    return {
+      text: "RACE!",
+      screenWidth: state.width,
+      screenHeight: state.height,
+      style: "go",
+    };
+  }
+  if (racePhase === RACE_PHASE.FINISHED && !shouldShowFinishPanel()) {
+    return {
+      text: "FINISH!",
+      screenWidth: state.width,
+      screenHeight: state.height,
+      style: "finish",
+    };
+  }
+  return null;
+}
+
+function shouldShowFinishPanel() {
+  if (!raceState.finishStartTime) {
+    return false;
+  }
+  const elapsed = (performance.now() - raceState.finishStartTime) / 1000;
+  return elapsed >= RACE_TIMING.finishSplashDuration;
+}
+
+function updateBestRunStats() {
+  const runScore = scoreState.runScore;
+  const runTime = raceState.runElapsed;
+  if (runScore > bestRunState.bestScore) {
+    bestRunState.bestScore = runScore;
+    bestRunState.newBestScore = true;
+    storeBestScore(bestRunState.bestScore);
+  }
+  if (runTime > 0 && (bestRunState.bestTime === null || runTime < bestRunState.bestTime)) {
+    bestRunState.bestTime = runTime;
+    bestRunState.newBestTime = true;
+    storeBestTime(bestRunState.bestTime);
+  }
+}
+
+function loadStoredBestScore() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.bestScore);
+    return stored ? Number(stored) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function loadStoredBestTime() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.bestTime);
+    return stored ? Number(stored) || 0 : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeBestScore(score) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.bestScore, score.toFixed(0));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function storeBestTime(timeSeconds) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.bestTime, timeSeconds.toFixed(3));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function updateRaceProgress(now) {
   const t = track.getProgressAlongTrack(car.position);
   if (!Number.isFinite(t)) {
     return;
@@ -1263,25 +1453,30 @@ function updateRaceProgress() {
     raceState.raceArmed = true;
   }
 
-  if (raceState.raceArmed && !raceState.raceFinished) {
-    const finishGate = track.getFinishGate();
-    const gatePos = finishGate.gatePos || finishGate.pos;
-    const gateNormal = finishGate.gateNormal || finishGate.normal;
-    const dx = car.position.x - gatePos.x;
-    const dy = car.position.y - gatePos.y;
-    const d = dx * gateNormal.x + dy * gateNormal.y;
-    const prevGateD = raceState.prevGateD;
-    const crossing = prevGateD !== null && prevGateD < 0 && d >= 0;
-    raceState.gateD = d;
-    raceState.gateCrossed = crossing;
-    raceState.prevGateD = d;
-    if (
-      raceState.lapProgressUnwrapped >= 0.95 &&
-      crossing &&
-      car.speed >= 60
-    ) {
-      raceState.raceFinished = true;
-    }
+  const finishGate = track.getFinishGate();
+  const gatePos = finishGate.gatePos || finishGate.pos;
+  const gateNormal = finishGate.gateNormal || finishGate.normal;
+  const dx = car.position.x - gatePos.x;
+  const dy = car.position.y - gatePos.y;
+  const d = dx * gateNormal.x + dy * gateNormal.y;
+  const prevGateD = raceState.prevGateD;
+  const crossing = prevGateD !== null && prevGateD < 0 && d >= 0;
+  raceState.gateD = d;
+  raceState.gateCrossed = crossing;
+  raceState.prevGateD = d;
+
+  if (
+    raceState.raceArmed &&
+    !raceState.raceFinished &&
+    raceState.lapProgressUnwrapped >= 0.95 &&
+    crossing &&
+    car.speed >= 60
+  ) {
+    raceState.raceFinished = true;
+    raceState.racePhase = RACE_PHASE.FINISHED;
+    raceState.finishStartTime = now;
+    raceState.runElapsed = getRunElapsedSeconds(now);
+    updateBestRunStats();
   }
 }
 
@@ -1320,6 +1515,12 @@ function resetToStart() {
   raceState.raceFinished = false;
   raceState.lastProgress = null;
   raceState.lapProgressUnwrapped = 0;
+  raceState.racePhase = RACE_PHASE.PRE_RACE;
+  raceState.countdownStartTime = null;
+  raceState.goStartTime = null;
+  raceState.finishStartTime = null;
+  raceState.runStartTime = null;
+  raceState.runElapsed = 0;
   const finishGate = track.getFinishGate();
   const gatePos = finishGate.gatePos || finishGate.pos;
   const gateNormal = finishGate.gateNormal || finishGate.normal;
@@ -1329,6 +1530,8 @@ function resetToStart() {
   raceState.prevGateD = gateD;
   raceState.gateD = gateD;
   raceState.gateCrossed = false;
+  bestRunState.newBestScore = false;
+  bestRunState.newBestTime = false;
   resetRun(scoreState);
 }
 
