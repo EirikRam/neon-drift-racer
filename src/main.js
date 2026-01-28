@@ -205,6 +205,13 @@ const camera = {
   prevPosition: createVec2(0, 0),
 };
 
+const raceState = {
+  raceArmed: false,
+  raceFinished: false,
+  lastProgress: null,
+  lapProgressUnwrapped: 0,
+};
+
 function resizeCanvas() {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   state.width = window.innerWidth;
@@ -234,19 +241,7 @@ function updateFixed() {
   camera.prevPosition.y = camera.position.y;
 
   if (wasPressed("KeyR")) {
-    car.position.x = 0;
-    car.position.y = 0;
-    car.heading = 0;
-    car.vel.x = 0;
-    car.vel.y = 0;
-    car.speed = 0;
-    car.driftAngle = 0;
-    car.driftActive = false;
-    car.boostActive = false;
-    car.boostTimer = 0;
-    car.boostStrength = 1;
-    car.boostDuration = 0;
-    resetRun(scoreState);
+    resetToStart();
   }
 
   if (wasPressed("KeyC")) {
@@ -331,6 +326,7 @@ function updateFixed() {
     car.boostActive,
     impact ? impact.strength : 0,
   );
+  updateRaceProgress();
 
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
@@ -907,6 +903,9 @@ function drawHud(renderCamera) {
     settings.showNearMissDebug && trafficState.system
       ? trafficState.system.cars.filter((npc) => npc.knockbackTimer > 0).length
       : 0;
+  const lapProgress = Number.isFinite(raceState.lapProgressUnwrapped)
+    ? clamp(raceState.lapProgressUnwrapped, 0, 1)
+    : 0;
 
   renderHUD(context, {
     fps: state.fps,
@@ -941,6 +940,10 @@ function drawHud(renderCamera) {
     showNearMissDebug: settings.showNearMissDebug,
     knockedCount,
     trafficStats,
+    raceArmed: raceState.raceArmed,
+    raceFinished: raceState.raceFinished,
+    lapProgress,
+    startT: Number.isFinite(track.startT) ? track.startT : 0,
   });
 }
 
@@ -1227,6 +1230,79 @@ function updateBoostState(dt) {
   }
 }
 
+function updateRaceProgress() {
+  const t = track.getProgressAlongTrack(car.position);
+  if (!Number.isFinite(t)) {
+    return;
+  }
+  const prev = raceState.lastProgress;
+  if (prev !== null && Number.isFinite(prev)) {
+    let delta = t - prev;
+    if (delta < -0.5) delta += 1;
+    if (delta > 0.5) delta -= 1;
+    if (Number.isFinite(delta)) {
+      raceState.lapProgressUnwrapped += delta;
+    }
+  }
+  raceState.lastProgress = t;
+
+  if (!Number.isFinite(raceState.lapProgressUnwrapped)) {
+    raceState.lapProgressUnwrapped = 0;
+  }
+
+  if (!raceState.raceArmed && raceState.lapProgressUnwrapped > 0.15) {
+    raceState.raceArmed = true;
+  }
+
+  if (raceState.raceArmed && !raceState.raceFinished) {
+    const finishGate = track.getFinishGate();
+    const forwardDot =
+      car.vel.x * finishGate.tangent.x + car.vel.y * finishGate.tangent.y;
+    const wrapped = prev !== null && prev > 0.95 && t < 0.05;
+    if (raceState.lapProgressUnwrapped >= 0.98 && wrapped && forwardDot > 0) {
+      raceState.raceFinished = true;
+    }
+  }
+}
+
+function resetToStart() {
+  const startT = Number.isFinite(track.startT) ? track.startT : 0;
+  const sample = track.getPointAtProgress(startT);
+  const pose = {
+    pos: sample.point,
+    heading: Math.atan2(sample.tangent.y, sample.tangent.x),
+    tangent: sample.tangent,
+    normal: sample.normal,
+  };
+  car.position.x = pose.pos.x;
+  car.position.y = pose.pos.y;
+  car.prevPosition.x = pose.pos.x;
+  car.prevPosition.y = pose.pos.y;
+  car.heading = pose.heading;
+  car.prevHeading = pose.heading;
+  car.vel.x = 0;
+  car.vel.y = 0;
+  car.prevVel.x = 0;
+  car.prevVel.y = 0;
+  car.speed = 0;
+  car.velAngle = pose.heading;
+  car.driftAngle = 0;
+  car.driftActive = false;
+  car.boostActive = false;
+  car.boostTimer = 0;
+  car.boostStrength = 1;
+  car.boostDuration = 0;
+  camera.position.x = pose.pos.x;
+  camera.position.y = pose.pos.y;
+  camera.prevPosition.x = pose.pos.x;
+  camera.prevPosition.y = pose.pos.y;
+  raceState.raceArmed = false;
+  raceState.raceFinished = false;
+  raceState.lastProgress = null;
+  raceState.lapProgressUnwrapped = 0;
+  resetRun(scoreState);
+}
+
 function drawBoostPads(pads) {
   if (!pads.length) {
     return;
@@ -1508,6 +1584,27 @@ function drawTrackDebug(renderCarPos) {
     }
   }
 
+  const finishGate = track.getFinishGate();
+  const gateHalfWidth = track.width * 1.05;
+  const gateA = {
+    x: finishGate.pos.x - finishGate.normal.x * gateHalfWidth,
+    y: finishGate.pos.y - finishGate.normal.y * gateHalfWidth,
+  };
+  const gateB = {
+    x: finishGate.pos.x + finishGate.normal.x * gateHalfWidth,
+    y: finishGate.pos.y + finishGate.normal.y * gateHalfWidth,
+  };
+  context.strokeStyle = "rgba(255, 230, 140, 0.85)";
+  context.lineWidth = 3;
+  context.beginPath();
+  context.moveTo(gateA.x, gateA.y);
+  context.lineTo(gateB.x, gateB.y);
+  context.stroke();
+  context.fillStyle = "rgba(255, 230, 140, 0.95)";
+  context.beginPath();
+  context.arc(finishGate.pos.x, finishGate.pos.y, 5, 0, Math.PI * 2);
+  context.fill();
+
   if (track.waypoints?.length) {
     context.fillStyle = "rgba(230, 240, 255, 0.85)";
     context.strokeStyle = "rgba(230, 240, 255, 0.4)";
@@ -1685,6 +1782,7 @@ async function loadGameAssets() {
   trafficState.carSprites = trafficState.system.cars.map(
     (car) => ["npcSedan", "npcCoupe", "npcMuscle", "npcTaxi", "npcBike"][car.id % 5],
   );
+  resetToStart();
 }
 
 drawLoadingScreen("Loading assets...");

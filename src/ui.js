@@ -45,9 +45,13 @@ export function renderHUD(ctx, hudState) {
     showNearMissDebug,
     knockedCount,
     trafficStats,
+    raceArmed,
+    raceFinished,
+    lapProgress,
+    startT,
   } = hudState;
 
-  const boostY = 270;
+  const boostY = 330;
   const boostWidth = 160;
   const boostHeight = 10;
   const propDebugExtra = showPropDebug && propDistrictCounts ? 18 : 0;
@@ -79,7 +83,11 @@ export function renderHUD(ctx, hudState) {
   ctx.fillText(`Particles: ${particleCount}`, 16, 196);
   ctx.fillText(`Trail Rate: ${trailRate.toFixed(1)} / s`, 16, 214);
   ctx.fillText(`Road: ${roadStatus}`, 16, 232);
-  ctx.fillText(`Collisions: ${showCollisions ? "ON" : "OFF"}`, 16, 250);
+  const runStatus = raceFinished ? "FINISHED" : raceArmed ? "ARMED" : "NOT ARMED";
+  ctx.fillText(`Run: ${runStatus}`, 16, 250);
+  ctx.fillText(`Lap: ${(lapProgress * 100).toFixed(0)}%`, 16, 268);
+  ctx.fillText(`Start T: ${startT.toFixed(3)}`, 16, 286);
+  ctx.fillText(`Collisions: ${showCollisions ? "ON" : "OFF"}`, 16, 304);
   ctx.fillStyle = "rgba(90, 110, 140, 0.5)";
   ctx.fillRect(16, boostY, boostWidth, boostHeight);
   if (boostRatio > 0) {

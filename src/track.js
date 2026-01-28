@@ -1,6 +1,7 @@
 import { clamp, createVec2 } from "./math.js";
 
 const TWO_PI = Math.PI * 2;
+const START_T = 0.02;
 const DISTRICTS = [
   { id: "beach", name: "Beach Causeway", startT: 0.0, endT: 0.25 },
   { id: "downtown", name: "Downtown Grid", startT: 0.25, endT: 0.5 },
@@ -137,6 +138,7 @@ class Track {
     this.districts = districts;
     this.waypoints = waypoints;
     this.sharpCorners = sharpCorners;
+    this.startT = START_T;
 
     const data = buildSegmentData(centerline);
     this.segmentLengths = data.segmentLengths;
@@ -230,6 +232,27 @@ class Track {
     const normal = safeNormalize(-tangent.y, tangent.x);
 
     return { point, tangent, normal };
+  }
+
+  getStartPose() {
+    const sample = this.getPointAtProgress(this.startT);
+    const heading = Math.atan2(sample.tangent.y, sample.tangent.x);
+    return {
+      pos: createVec2(sample.point.x, sample.point.y),
+      heading,
+      tangent: sample.tangent,
+      normal: sample.normal,
+    };
+  }
+
+  getFinishGate() {
+    const sample = this.getPointAtProgress(this.startT);
+    return {
+      t: this.startT,
+      pos: createVec2(sample.point.x, sample.point.y),
+      tangent: sample.tangent,
+      normal: sample.normal,
+    };
   }
 
   getBoundaries() {
