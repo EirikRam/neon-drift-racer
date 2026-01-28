@@ -210,6 +210,9 @@ const raceState = {
   raceFinished: false,
   lastProgress: null,
   lapProgressUnwrapped: 0,
+  prevGateD: null,
+  gateD: null,
+  gateCrossed: false,
 };
 
 function resizeCanvas() {
@@ -906,6 +909,7 @@ function drawHud(renderCamera) {
   const lapProgress = Number.isFinite(raceState.lapProgressUnwrapped)
     ? clamp(raceState.lapProgressUnwrapped, 0, 1)
     : 0;
+  const progressT = track.getProgressAlongTrack(car.position);
 
   renderHUD(context, {
     fps: state.fps,
@@ -944,6 +948,11 @@ function drawHud(renderCamera) {
     raceFinished: raceState.raceFinished,
     lapProgress,
     startT: Number.isFinite(track.startT) ? track.startT : 0,
+    progressT,
+    lastProgress: raceState.lastProgress,
+    lapProgressUnwrapped: raceState.lapProgressUnwrapped,
+    gateD: raceState.gateD,
+    gateCrossed: raceState.gateCrossed,
   });
 }
 
@@ -1256,10 +1265,21 @@ function updateRaceProgress() {
 
   if (raceState.raceArmed && !raceState.raceFinished) {
     const finishGate = track.getFinishGate();
-    const forwardDot =
-      car.vel.x * finishGate.tangent.x + car.vel.y * finishGate.tangent.y;
-    const wrapped = prev !== null && prev > 0.95 && t < 0.05;
-    if (raceState.lapProgressUnwrapped >= 0.98 && wrapped && forwardDot > 0) {
+    const gatePos = finishGate.gatePos || finishGate.pos;
+    const gateNormal = finishGate.gateNormal || finishGate.normal;
+    const dx = car.position.x - gatePos.x;
+    const dy = car.position.y - gatePos.y;
+    const d = dx * gateNormal.x + dy * gateNormal.y;
+    const prevGateD = raceState.prevGateD;
+    const crossing = prevGateD !== null && prevGateD < 0 && d >= 0;
+    raceState.gateD = d;
+    raceState.gateCrossed = crossing;
+    raceState.prevGateD = d;
+    if (
+      raceState.lapProgressUnwrapped >= 0.95 &&
+      crossing &&
+      car.speed >= 60
+    ) {
       raceState.raceFinished = true;
     }
   }
@@ -1300,6 +1320,15 @@ function resetToStart() {
   raceState.raceFinished = false;
   raceState.lastProgress = null;
   raceState.lapProgressUnwrapped = 0;
+  const finishGate = track.getFinishGate();
+  const gatePos = finishGate.gatePos || finishGate.pos;
+  const gateNormal = finishGate.gateNormal || finishGate.normal;
+  const gateDx = car.position.x - gatePos.x;
+  const gateDy = car.position.y - gatePos.y;
+  const gateD = gateDx * gateNormal.x + gateDy * gateNormal.y;
+  raceState.prevGateD = gateD;
+  raceState.gateD = gateD;
+  raceState.gateCrossed = false;
   resetRun(scoreState);
 }
 
@@ -1585,14 +1614,16 @@ function drawTrackDebug(renderCarPos) {
   }
 
   const finishGate = track.getFinishGate();
+  const gatePos = finishGate.gatePos || finishGate.pos;
+  const gateNormal = finishGate.gateNormal || finishGate.normal;
   const gateHalfWidth = track.width * 1.05;
   const gateA = {
-    x: finishGate.pos.x - finishGate.normal.x * gateHalfWidth,
-    y: finishGate.pos.y - finishGate.normal.y * gateHalfWidth,
+    x: gatePos.x - gateNormal.x * gateHalfWidth,
+    y: gatePos.y - gateNormal.y * gateHalfWidth,
   };
   const gateB = {
-    x: finishGate.pos.x + finishGate.normal.x * gateHalfWidth,
-    y: finishGate.pos.y + finishGate.normal.y * gateHalfWidth,
+    x: gatePos.x + gateNormal.x * gateHalfWidth,
+    y: gatePos.y + gateNormal.y * gateHalfWidth,
   };
   context.strokeStyle = "rgba(255, 230, 140, 0.85)";
   context.lineWidth = 3;
@@ -1602,7 +1633,7 @@ function drawTrackDebug(renderCarPos) {
   context.stroke();
   context.fillStyle = "rgba(255, 230, 140, 0.95)";
   context.beginPath();
-  context.arc(finishGate.pos.x, finishGate.pos.y, 5, 0, Math.PI * 2);
+  context.arc(gatePos.x, gatePos.y, 5, 0, Math.PI * 2);
   context.fill();
 
   if (track.waypoints?.length) {

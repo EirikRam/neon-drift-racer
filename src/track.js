@@ -247,11 +247,17 @@ class Track {
 
   getFinishGate() {
     const sample = this.getPointAtProgress(this.startT);
+    const gatePos = createVec2(sample.point.x, sample.point.y);
+    const gateNormal = sample.normal;
+    const gateTangent = sample.tangent;
     return {
       t: this.startT,
-      pos: createVec2(sample.point.x, sample.point.y),
-      tangent: sample.tangent,
-      normal: sample.normal,
+      gatePos,
+      gateNormal,
+      gateTangent,
+      pos: gatePos,
+      tangent: gateTangent,
+      normal: gateNormal,
     };
   }
 

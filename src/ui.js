@@ -49,12 +49,18 @@ export function renderHUD(ctx, hudState) {
     raceFinished,
     lapProgress,
     startT,
+    progressT,
+    lastProgress,
+    lapProgressUnwrapped,
+    gateD,
+    gateCrossed,
   } = hudState;
 
   const boostY = 330;
   const boostWidth = 160;
   const boostHeight = 10;
   const propDebugExtra = showPropDebug && propDistrictCounts ? 18 : 0;
+  const trackRaceExtra = showTrackDebug ? 54 : 0;
   const asphaltExtra = showTrackDebug && asphaltInfo ? 18 : 0;
   const trafficDebugExtra =
     showNearMissDebug && trafficStats
@@ -193,15 +199,49 @@ export function renderHUD(ctx, hudState) {
           : boostY + 70,
     );
   }
-  if (showTrackDebug && asphaltInfo) {
+  if (showTrackDebug) {
+    const lastTLabel = Number.isFinite(lastProgress) ? lastProgress.toFixed(3) : "n/a";
+    const lapUnwrappedLabel = Number.isFinite(lapProgressUnwrapped)
+      ? lapProgressUnwrapped.toFixed(3)
+      : "n/a";
+    const gateDLabel = Number.isFinite(gateD) ? gateD.toFixed(2) : "n/a";
     ctx.fillText(
-      `asphaltPattern: ${asphaltInfo.ok ? "OK" : "MISSING"}  scale ${asphaltInfo.scale.toFixed(2)}`,
+      `t: ${progressT.toFixed(3)}  last: ${lastTLabel}  lap: ${lapUnwrappedLabel}`,
       16,
       showNearMissDebug
         ? boostY + (showPropDebug ? 124 + propDebugExtra + trafficDebugExtra : 106 + trafficDebugExtra)
         : showPropDebug
           ? boostY + 106 + propDebugExtra
           : boostY + 88,
+    );
+    ctx.fillText(
+      `gate d: ${gateDLabel}  crossing: ${gateCrossed ? "YES" : "NO"}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 142 + propDebugExtra + trafficDebugExtra : 124 + trafficDebugExtra)
+        : showPropDebug
+          ? boostY + 124 + propDebugExtra
+          : boostY + 106,
+    );
+    ctx.fillText(
+      `armed: ${raceArmed ? "YES" : "NO"}  finished: ${raceFinished ? "YES" : "NO"}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 160 + propDebugExtra + trafficDebugExtra : 142 + trafficDebugExtra)
+        : showPropDebug
+          ? boostY + 142 + propDebugExtra
+          : boostY + 124,
+    );
+  }
+  if (showTrackDebug && asphaltInfo) {
+    ctx.fillText(
+      `asphaltPattern: ${asphaltInfo.ok ? "OK" : "MISSING"}  scale ${asphaltInfo.scale.toFixed(2)}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 124 + propDebugExtra + trackRaceExtra + trafficDebugExtra : 106 + trackRaceExtra + trafficDebugExtra)
+        : showPropDebug
+          ? boostY + 106 + propDebugExtra + trackRaceExtra
+          : boostY + 88 + trackRaceExtra,
     );
   }
   if (showTrackDebug && skylineInfo?.currentKey) {
@@ -213,20 +253,20 @@ export function renderHUD(ctx, hudState) {
       `Skyline: ${skylineInfo.currentKey}${nextLabel}${fadeLabel}`,
       16,
       showNearMissDebug
-        ? boostY + (showPropDebug ? 124 + propDebugExtra + asphaltExtra + trafficDebugExtra : 106 + asphaltExtra + trafficDebugExtra)
+        ? boostY + (showPropDebug ? 124 + propDebugExtra + trackRaceExtra + asphaltExtra + trafficDebugExtra : 106 + trackRaceExtra + asphaltExtra + trafficDebugExtra)
         : showPropDebug
-          ? boostY + 106 + propDebugExtra + asphaltExtra
-          : boostY + 88 + asphaltExtra,
+          ? boostY + 106 + propDebugExtra + trackRaceExtra + asphaltExtra
+          : boostY + 88 + trackRaceExtra + asphaltExtra,
     );
     if (skylineInfo.farKey) {
       ctx.fillText(
         `Far: ${skylineInfo.farKey}  Parallax: ${skylineInfo.farParallax.toFixed(2)} / ${skylineInfo.nearParallax.toFixed(2)}`,
         16,
         showNearMissDebug
-          ? boostY + (showPropDebug ? 142 + propDebugExtra + asphaltExtra + trafficDebugExtra : 124 + asphaltExtra + trafficDebugExtra)
+          ? boostY + (showPropDebug ? 142 + propDebugExtra + trackRaceExtra + asphaltExtra + trafficDebugExtra : 124 + trackRaceExtra + asphaltExtra + trafficDebugExtra)
           : showPropDebug
-            ? boostY + 124 + propDebugExtra + asphaltExtra
-            : boostY + 106 + asphaltExtra,
+            ? boostY + 124 + propDebugExtra + trackRaceExtra + asphaltExtra
+            : boostY + 106 + trackRaceExtra + asphaltExtra,
       );
     }
   }
