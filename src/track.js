@@ -2,6 +2,8 @@ import { clamp, createVec2 } from "./math.js";
 
 const TWO_PI = Math.PI * 2;
 const START_T = 0.02;
+const CHECKPOINT_TS = [0.14, 0.33, 0.52, 0.69, 0.86];
+const PROGRESS_LAMBDA = 5.0;
 const DISTRICTS = [
   { id: "beach", name: "Beach Causeway", startT: 0.0, endT: 0.25 },
   { id: "downtown", name: "Downtown Grid", startT: 0.25, endT: 0.5 },
@@ -207,6 +209,110 @@ class Track {
     return closest.along / this.totalLength;
   }
 
+  getProgressAlongTrackNear(worldPos, hintT, windowSegments = 60) {
+    const count = this.centerline.length;
+    if (!count) {
+      return 0;
+    }
+    const normalizedHint = ((hintT % 1) + 1) % 1;
+    const targetDistance = normalizedHint * this.totalLength;
+    let centerIndex = 0;
+    for (let i = 0; i < count; i += 1) {
+      const start = this.cumulativeLengths[i];
+      const end = start + this.segmentLengths[i];
+      if (targetDistance >= start && targetDistance <= end) {
+        centerIndex = i;
+        break;
+      }
+    }
+    const window = Math.max(1, Math.min(count, Math.floor(windowSegments)));
+    const startOffset = -Math.floor(window / 2);
+    const endOffset = startOffset + window - 1;
+
+    let bestDistSq = Number.POSITIVE_INFINITY;
+    let bestAlong = targetDistance;
+    for (let offset = startOffset; offset <= endOffset; offset += 1) {
+      const index = (centerIndex + offset + count) % count;
+      const nextIndex = (index + 1) % count;
+      const a = this.centerline[index];
+      const b = this.centerline[nextIndex];
+      const abx = b.x - a.x;
+      const aby = b.y - a.y;
+      const apx = worldPos.x - a.x;
+      const apy = worldPos.y - a.y;
+      const denom = abx * abx + aby * aby || 1;
+      const t = clamp((apx * abx + apy * aby) / denom, 0, 1);
+      const cx = a.x + abx * t;
+      const cy = a.y + aby * t;
+      const dx = worldPos.x - cx;
+      const dy = worldPos.y - cy;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        bestAlong = this.cumulativeLengths[index] + this.segmentLengths[index] * t;
+      }
+    }
+    if (!Number.isFinite(bestAlong) || this.totalLength <= 0) {
+      return normalizedHint;
+    }
+    return bestAlong / this.totalLength;
+  }
+
+  getProgressAlongTrackBest(worldPos, hintT, predictedT, windowSegments = 120) {
+    const count = this.centerline.length;
+    if (!count) {
+      return 0;
+    }
+    const normalizedHint = ((hintT % 1) + 1) % 1;
+    const targetDistance = normalizedHint * this.totalLength;
+    let centerIndex = 0;
+    for (let i = 0; i < count; i += 1) {
+      const start = this.cumulativeLengths[i];
+      const end = start + this.segmentLengths[i];
+      if (targetDistance >= start && targetDistance <= end) {
+        centerIndex = i;
+        break;
+      }
+    }
+    const window = Math.max(1, Math.min(count, Math.floor(windowSegments)));
+    const startOffset = -Math.floor(window / 2);
+    const endOffset = startOffset + window - 1;
+    const normalizedPredicted = ((predictedT % 1) + 1) % 1;
+    const lengthSq = this.totalLength * this.totalLength;
+
+    let bestCost = Number.POSITIVE_INFINITY;
+    let bestAlong = targetDistance;
+    for (let offset = startOffset; offset <= endOffset; offset += 1) {
+      const index = (centerIndex + offset + count) % count;
+      const nextIndex = (index + 1) % count;
+      const a = this.centerline[index];
+      const b = this.centerline[nextIndex];
+      const abx = b.x - a.x;
+      const aby = b.y - a.y;
+      const apx = worldPos.x - a.x;
+      const apy = worldPos.y - a.y;
+      const denom = abx * abx + aby * aby || 1;
+      const t = clamp((apx * abx + apy * aby) / denom, 0, 1);
+      const cx = a.x + abx * t;
+      const cy = a.y + aby * t;
+      const dx = worldPos.x - cx;
+      const dy = worldPos.y - cy;
+      const distSq = dx * dx + dy * dy;
+      const candidateAlong = this.cumulativeLengths[index] + this.segmentLengths[index] * t;
+      const candidateT = candidateAlong / this.totalLength;
+      const deviation = wrapDiff(candidateT, normalizedPredicted);
+      const cost = distSq + PROGRESS_LAMBDA * deviation * deviation * lengthSq;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestAlong = candidateAlong;
+      }
+    }
+    if (!Number.isFinite(bestAlong) || this.totalLength <= 0) {
+      return normalizedHint;
+    }
+    return bestAlong / this.totalLength;
+  }
+
   getPointAtProgress(progress) {
     const normalized = ((progress % 1) + 1) % 1;
     const targetDistance = normalized * this.totalLength;
@@ -261,6 +367,18 @@ class Track {
     };
   }
 
+  getCheckpoints() {
+    return CHECKPOINT_TS.map((t) => {
+      const sample = this.getPointAtProgress(t);
+      return {
+        t,
+        pos: createVec2(sample.point.x, sample.point.y),
+        tangent: sample.tangent,
+        normal: sample.normal,
+      };
+    });
+  }
+
   getBoundaries() {
     return { inner: this.innerBoundary, outer: this.outerBoundary };
   }
@@ -288,6 +406,13 @@ function safeNormalize(x, y) {
     return { x: 1, y: 0 };
   }
   return { x: x / length, y: y / length };
+}
+
+function wrapDiff(a, b) {
+  let delta = a - b;
+  if (delta > 0.5) delta -= 1;
+  if (delta < -0.5) delta += 1;
+  return delta;
 }
 
 export function createTrack() {

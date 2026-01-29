@@ -106,6 +106,16 @@ const RACE_TIMING = {
   finishSplashDuration: 1.5,
 };
 
+const CHECKPOINTS = {
+  flashDuration: 0.6,
+};
+
+const PROGRESS_TRACKING = {
+  windowSegments: 120,
+  predictedClamp: 0.03,
+  clampScale: 1.8,
+};
+
 const STORAGE_KEYS = {
   bestScore: "ndr_bestScore",
   bestTime: "ndr_bestTime",
@@ -233,11 +243,20 @@ const camera = {
 };
 
 const raceState = {
-  racePhase: RACE_PHASE.PRE_RACE,
+  phase: RACE_PHASE.PRE_RACE,
   raceArmed: false,
   raceFinished: false,
   lastProgress: null,
+  prevProgressT: null,
+  lastProgressTime: null,
+  predictedProgressT: null,
+  chosenProgressT: null,
+  rawProgressDelta: null,
+  clampedProgressDelta: null,
+  plausibleProgressDelta: null,
+  branchSnapPrevented: false,
   lapProgressUnwrapped: 0,
+  prevLapProgress: 0,
   prevGateD: null,
   gateD: null,
   gateCrossed: false,
@@ -246,6 +265,13 @@ const raceState = {
   finishStartTime: null,
   runStartTime: null,
   runElapsed: 0,
+  checkpoints: [],
+  currentCheckpointIndex: 0,
+  splitTimes: [],
+  lastSplitDelta: null,
+  checkpointFlashTime: null,
+  checkpointFlashText: null,
+  bestSplitIndex: null,
 };
 
 function resizeCanvas() {
@@ -342,7 +368,7 @@ function updateFixed() {
 
   updateRacePhase(now);
   updateBoostState(dt);
-  updateCarPhysics(dt, raceState.racePhase !== RACE_PHASE.RACING);
+  updateCarPhysics(dt, raceState.phase !== RACE_PHASE.RACING);
   updateSkylineState(dt);
   updateTraffic(dt);
   const impact = resolveTrackCollision();
@@ -359,7 +385,7 @@ function updateFixed() {
   if (impact && settings.showParticles) {
     spawnImpactSparks(impact);
   }
-  if (raceState.racePhase === RACE_PHASE.RACING) {
+  if (raceState.phase === RACE_PHASE.RACING) {
     updateScore(
       scoreState,
       car,
@@ -513,7 +539,7 @@ function render(alpha) {
   if (overlayState) {
     drawCenterOverlay(context, overlayState);
   }
-  if (raceState.racePhase === RACE_PHASE.FINISHED) {
+  if (raceState.phase === RACE_PHASE.FINISHED) {
     drawFinishPanel(context, {
       screenWidth: state.width,
       screenHeight: state.height,
@@ -524,6 +550,8 @@ function render(alpha) {
       newBestScore: bestRunState.newBestScore,
       newBestTime: bestRunState.newBestTime,
       showPanel: shouldShowFinishPanel(),
+      splitTimes: raceState.splitTimes,
+      bestSplitIndex: raceState.bestSplitIndex,
     });
   }
 }
@@ -966,10 +994,14 @@ function drawHud(renderCamera) {
   const lapProgress = Number.isFinite(raceState.lapProgressUnwrapped)
     ? clamp(raceState.lapProgressUnwrapped, 0, 1)
     : 0;
-  const progressT = track.getProgressAlongTrack(car.position);
-  const runTimerSeconds = raceState.racePhase === RACE_PHASE.RACING
+  const progressT = Number.isFinite(raceState.lastProgress)
+    ? raceState.lastProgress
+    : track.getProgressAlongTrack(car.position);
+  const runTimerSeconds = raceState.phase === RACE_PHASE.RACING
     ? raceState.runElapsed
     : null;
+  const nextCheckpoint = raceState.checkpoints[raceState.currentCheckpointIndex];
+  const nextCheckpointThreshold = nextCheckpoint ? nextCheckpoint.t : null;
 
   renderHUD(context, {
     fps: state.fps,
@@ -1009,19 +1041,42 @@ function drawHud(renderCamera) {
     lapProgress,
     startT: Number.isFinite(track.startT) ? track.startT : 0,
     progressT,
-    lastProgress: raceState.lastProgress,
+    lastProgress: raceState.prevProgressT,
+    predictedProgressT: raceState.predictedProgressT,
+    chosenProgressT: raceState.chosenProgressT,
+    rawProgressDelta: raceState.rawProgressDelta,
+    clampedProgressDelta: raceState.clampedProgressDelta,
+    plausibleProgressDelta: raceState.plausibleProgressDelta,
+    branchSnapPrevented: raceState.branchSnapPrevented,
     lapProgressUnwrapped: raceState.lapProgressUnwrapped,
     gateD: raceState.gateD,
     gateCrossed: raceState.gateCrossed,
-    racePhase: raceState.racePhase,
+    phase: raceState.phase,
     runTimerSeconds,
     screenWidth: state.width,
+    checkpointIndex: raceState.currentCheckpointIndex,
+    checkpointCount: raceState.checkpoints.length,
+    lastSplitDelta: raceState.lastSplitDelta,
+    prevLapProgress: raceState.prevLapProgress,
+    nextCheckpointThreshold,
+    progressWindowSegments: PROGRESS_TRACKING.windowSegments,
   });
 }
 
 function lerpAngle(a, b, t) {
   const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
   return a + delta * t;
+}
+
+function wrap01(value) {
+  return ((value % 1) + 1) % 1;
+}
+
+function wrapDiffSigned(a, b) {
+  let delta = a - b;
+  if (delta > 0.5) delta -= 1;
+  if (delta < -0.5) delta += 1;
+  return delta;
 }
 
 function getTrafficStats(trackRef, system, renderStats) {
@@ -1303,29 +1358,29 @@ function updateBoostState(dt) {
 }
 
 function updateRacePhase(now) {
-  if (raceState.racePhase === RACE_PHASE.PRE_RACE) {
+  if (raceState.phase === RACE_PHASE.PRE_RACE) {
     if (!raceState.countdownStartTime) {
       raceState.countdownStartTime = now + RACE_TIMING.autoStartDelay * 1000;
       return;
     }
     if (now >= raceState.countdownStartTime) {
-      raceState.racePhase = RACE_PHASE.COUNTDOWN;
+      raceState.phase = RACE_PHASE.COUNTDOWN;
       raceState.countdownStartTime = now;
     }
-  } else if (raceState.racePhase === RACE_PHASE.COUNTDOWN) {
+  } else if (raceState.phase === RACE_PHASE.COUNTDOWN) {
     const elapsed = (now - raceState.countdownStartTime) / 1000;
     if (elapsed >= RACE_TIMING.countdownStep * 3) {
-      raceState.racePhase = RACE_PHASE.GO_FLASH;
+      raceState.phase = RACE_PHASE.GO_FLASH;
       raceState.goStartTime = now;
     }
-  } else if (raceState.racePhase === RACE_PHASE.GO_FLASH) {
+  } else if (raceState.phase === RACE_PHASE.GO_FLASH) {
     const elapsed = (now - raceState.goStartTime) / 1000;
     if (elapsed >= RACE_TIMING.goFlashDuration) {
-      raceState.racePhase = RACE_PHASE.RACING;
+      raceState.phase = RACE_PHASE.RACING;
       raceState.runStartTime = now;
       raceState.runElapsed = 0;
     }
-  } else if (raceState.racePhase === RACE_PHASE.RACING) {
+  } else if (raceState.phase === RACE_PHASE.RACING) {
     raceState.runElapsed = getRunElapsedSeconds(now);
   }
 }
@@ -1338,8 +1393,8 @@ function getRunElapsedSeconds(now) {
 }
 
 function getOverlayState() {
-  const { racePhase } = raceState;
-  if (racePhase === RACE_PHASE.COUNTDOWN) {
+  const { phase } = raceState;
+  if (phase === RACE_PHASE.COUNTDOWN) {
     const elapsed = (performance.now() - raceState.countdownStartTime) / 1000;
     const index = Math.floor(elapsed / RACE_TIMING.countdownStep);
     const count = 3 - index;
@@ -1353,7 +1408,7 @@ function getOverlayState() {
     }
     return null;
   }
-  if (racePhase === RACE_PHASE.GO_FLASH) {
+  if (phase === RACE_PHASE.GO_FLASH) {
     return {
       text: "RACE!",
       screenWidth: state.width,
@@ -1361,7 +1416,18 @@ function getOverlayState() {
       style: "go",
     };
   }
-  if (racePhase === RACE_PHASE.FINISHED && !shouldShowFinishPanel()) {
+  if (phase === RACE_PHASE.RACING && raceState.checkpointFlashTime) {
+    const elapsed = (performance.now() - raceState.checkpointFlashTime) / 1000;
+    if (elapsed <= CHECKPOINTS.flashDuration) {
+      return {
+        text: raceState.checkpointFlashText || "CHECKPOINT",
+        screenWidth: state.width,
+        screenHeight: state.height,
+        style: "checkpoint",
+      };
+    }
+  }
+  if (phase === RACE_PHASE.FINISHED && !shouldShowFinishPanel()) {
     return {
       text: "FINISH!",
       screenWidth: state.width,
@@ -1393,6 +1459,23 @@ function updateBestRunStats() {
     bestRunState.newBestTime = true;
     storeBestTime(bestRunState.bestTime);
   }
+}
+
+function getBestSplitIndex(splitTimes) {
+  if (!splitTimes.length) {
+    return null;
+  }
+  let bestIndex = 0;
+  let bestDelta = splitTimes[0];
+  for (let i = 1; i < splitTimes.length; i += 1) {
+    const prev = splitTimes[i - 1];
+    const delta = splitTimes[i] - prev;
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
 }
 
 function loadStoredBestScore() {
@@ -1430,20 +1513,61 @@ function storeBestTime(timeSeconds) {
 }
 
 function updateRaceProgress(now) {
-  const t = track.getProgressAlongTrack(car.position);
-  if (!Number.isFinite(t)) {
+  const lastProgressT = Number.isFinite(raceState.lastProgress)
+    ? raceState.lastProgress
+    : track.getProgressAlongTrack(car.position);
+  const totalLength = track.totalLength || 1;
+  const dtSeconds = raceState.lastProgressTime ? Math.max(0, (now - raceState.lastProgressTime) / 1000) : 0;
+  const speed = car.speed;
+  const plausibleDelta = totalLength > 0 ? (speed * dtSeconds) / totalLength : 0;
+  const lastSample = track.getPointAtProgress(lastProgressT);
+  const travelDot = car.vel.x * lastSample.tangent.x + car.vel.y * lastSample.tangent.y;
+  const travelSign = travelDot >= 0 ? 1 : -1;
+  const predictedDelta = clamp(
+    travelSign * plausibleDelta,
+    -PROGRESS_TRACKING.predictedClamp,
+    PROGRESS_TRACKING.predictedClamp,
+  );
+  const predictedT = wrap01(lastProgressT + predictedDelta);
+  const progressLookup =
+    typeof track.getProgressAlongTrackBest === "function"
+      ? track.getProgressAlongTrackBest.bind(track)
+      : track.getProgressAlongTrack.bind(track);
+  const candidateT =
+    progressLookup === track.getProgressAlongTrack
+      ? progressLookup(car.position)
+      : progressLookup(
+          car.position,
+          lastProgressT,
+          predictedT,
+          PROGRESS_TRACKING.windowSegments,
+        );
+  if (!Number.isFinite(candidateT)) {
     return;
   }
-  const prev = raceState.lastProgress;
-  if (prev !== null && Number.isFinite(prev)) {
-    let delta = t - prev;
-    if (delta < -0.5) delta += 1;
-    if (delta > 0.5) delta -= 1;
-    if (Number.isFinite(delta)) {
-      raceState.lapProgressUnwrapped += delta;
-    }
+  const rawDelta = Number.isFinite(raceState.lastProgress)
+    ? wrapDiffSigned(candidateT, lastProgressT)
+    : 0;
+  const maxDelta = plausibleDelta * PROGRESS_TRACKING.clampScale;
+  const clampedDelta = Number.isFinite(rawDelta)
+    ? clamp(rawDelta, -maxDelta, maxDelta)
+    : 0;
+  const branchSnapPrevented =
+    Number.isFinite(rawDelta) && Math.abs(rawDelta) > Math.abs(clampedDelta) + 1e-6;
+  const adjustedT =
+    Number.isFinite(raceState.lastProgress) ? wrap01(lastProgressT + clampedDelta) : candidateT;
+  if (Number.isFinite(clampedDelta)) {
+    raceState.lapProgressUnwrapped += clampedDelta;
   }
-  raceState.lastProgress = t;
+  raceState.prevProgressT = raceState.lastProgress;
+  raceState.lastProgress = adjustedT;
+  raceState.lastProgressTime = now;
+  raceState.predictedProgressT = predictedT;
+  raceState.chosenProgressT = candidateT;
+  raceState.rawProgressDelta = rawDelta;
+  raceState.clampedProgressDelta = clampedDelta;
+  raceState.plausibleProgressDelta = plausibleDelta;
+  raceState.branchSnapPrevented = branchSnapPrevented;
 
   if (!Number.isFinite(raceState.lapProgressUnwrapped)) {
     raceState.lapProgressUnwrapped = 0;
@@ -1451,6 +1575,10 @@ function updateRaceProgress(now) {
 
   if (!raceState.raceArmed && raceState.lapProgressUnwrapped > 0.15) {
     raceState.raceArmed = true;
+  }
+
+  if (!raceState.checkpoints.length) {
+    raceState.checkpoints = track.getCheckpoints();
   }
 
   const finishGate = track.getFinishGate();
@@ -1465,17 +1593,36 @@ function updateRaceProgress(now) {
   raceState.gateCrossed = crossing;
   raceState.prevGateD = d;
 
+  if (raceState.phase === RACE_PHASE.RACING && raceState.checkpoints.length) {
+    while (raceState.currentCheckpointIndex < raceState.checkpoints.length) {
+      const index = raceState.currentCheckpointIndex;
+      const target = raceState.checkpoints[index];
+      if (raceState.lapProgressUnwrapped >= target.t) {
+        const elapsed = raceState.runElapsed;
+        const prevSplit = index > 0 ? raceState.splitTimes[index - 1] : 0;
+        raceState.splitTimes[index] = elapsed;
+        raceState.lastSplitDelta = elapsed - prevSplit;
+        raceState.currentCheckpointIndex += 1;
+        raceState.checkpointFlashTime = now;
+        raceState.checkpointFlashText = `CHECKPOINT ${raceState.currentCheckpointIndex}/${raceState.checkpoints.length}`;
+      } else {
+        break;
+      }
+    }
+  }
+  raceState.prevLapProgress = raceState.lapProgressUnwrapped;
+
   if (
     raceState.raceArmed &&
     !raceState.raceFinished &&
-    raceState.lapProgressUnwrapped >= 0.95 &&
-    crossing &&
-    car.speed >= 60
+    raceState.phase === RACE_PHASE.RACING &&
+    raceState.lapProgressUnwrapped >= 1
   ) {
     raceState.raceFinished = true;
-    raceState.racePhase = RACE_PHASE.FINISHED;
+    raceState.phase = RACE_PHASE.FINISHED;
     raceState.finishStartTime = now;
     raceState.runElapsed = getRunElapsedSeconds(now);
+    raceState.bestSplitIndex = getBestSplitIndex(raceState.splitTimes);
     updateBestRunStats();
   }
 }
@@ -1514,13 +1661,29 @@ function resetToStart() {
   raceState.raceArmed = false;
   raceState.raceFinished = false;
   raceState.lastProgress = null;
+  raceState.prevProgressT = null;
+  raceState.lastProgressTime = null;
+  raceState.predictedProgressT = null;
+  raceState.chosenProgressT = null;
+  raceState.rawProgressDelta = null;
+  raceState.clampedProgressDelta = null;
+  raceState.plausibleProgressDelta = null;
+  raceState.branchSnapPrevented = false;
   raceState.lapProgressUnwrapped = 0;
-  raceState.racePhase = RACE_PHASE.PRE_RACE;
+  raceState.prevLapProgress = 0;
+  raceState.phase = RACE_PHASE.PRE_RACE;
   raceState.countdownStartTime = null;
   raceState.goStartTime = null;
   raceState.finishStartTime = null;
   raceState.runStartTime = null;
   raceState.runElapsed = 0;
+  raceState.checkpoints = track.getCheckpoints();
+  raceState.currentCheckpointIndex = 0;
+  raceState.splitTimes = [];
+  raceState.lastSplitDelta = null;
+  raceState.checkpointFlashTime = null;
+  raceState.checkpointFlashText = null;
+  raceState.bestSplitIndex = null;
   const finishGate = track.getFinishGate();
   const gatePos = finishGate.gatePos || finishGate.pos;
   const gateNormal = finishGate.gateNormal || finishGate.normal;
@@ -1838,6 +2001,23 @@ function drawTrackDebug(renderCarPos) {
   context.beginPath();
   context.arc(gatePos.x, gatePos.y, 5, 0, Math.PI * 2);
   context.fill();
+
+  const checkpoints = raceState.checkpoints.length
+    ? raceState.checkpoints
+    : track.getCheckpoints();
+  if (checkpoints.length) {
+    context.fillStyle = "rgba(120, 255, 220, 0.85)";
+    context.strokeStyle = "rgba(120, 255, 220, 0.55)";
+    context.font = "12px 'Segoe UI', system-ui, sans-serif";
+    context.textBaseline = "middle";
+    for (let i = 0; i < checkpoints.length; i += 1) {
+      const checkpoint = checkpoints[i];
+      context.beginPath();
+      context.arc(checkpoint.pos.x, checkpoint.pos.y, 7, 0, Math.PI * 2);
+      context.stroke();
+      context.fillText(String(i + 1), checkpoint.pos.x + 10, checkpoint.pos.y);
+    }
+  }
 
   if (track.waypoints?.length) {
     context.fillStyle = "rgba(230, 240, 255, 0.85)";

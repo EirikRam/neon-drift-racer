@@ -51,15 +51,27 @@ export function renderHUD(ctx, hudState) {
     startT,
     progressT,
     lastProgress,
+    predictedProgressT,
+    chosenProgressT,
+    rawProgressDelta,
+    clampedProgressDelta,
+    plausibleProgressDelta,
+    branchSnapPrevented,
     lapProgressUnwrapped,
     gateD,
     gateCrossed,
-    racePhase,
+    phase,
     runTimerSeconds,
     screenWidth,
+    checkpointIndex,
+    checkpointCount,
+    lastSplitDelta,
+    prevLapProgress,
+    nextCheckpointThreshold,
+    progressWindowSegments,
   } = hudState;
 
-  const boostY = 330;
+  const boostY = 370;
   const boostWidth = 160;
   const boostHeight = 10;
   const propDebugExtra = showPropDebug && propDistrictCounts ? 18 : 0;
@@ -95,9 +107,15 @@ export function renderHUD(ctx, hudState) {
   const runStatus = raceFinished ? "FINISHED" : raceArmed ? "ARMED" : "NOT ARMED";
   ctx.fillText(`Run: ${runStatus}`, 16, 250);
   ctx.fillText(`Lap: ${(lapProgress * 100).toFixed(0)}%`, 16, 268);
-  ctx.fillText(`Start T: ${startT.toFixed(3)}`, 16, 286);
-  ctx.fillText(`Collisions: ${showCollisions ? "ON" : "OFF"}`, 16, 304);
-  if (racePhase === "RACING" && runTimerSeconds !== null) {
+  if (checkpointCount > 0) {
+    ctx.fillText(`CP: ${checkpointIndex}/${checkpointCount}`, 16, 286);
+    if (lastSplitDelta !== null) {
+      ctx.fillText(`Last Split: ${formatSplit(lastSplitDelta)}`, 16, 304);
+    }
+  }
+  ctx.fillText(`Start T: ${startT.toFixed(3)}`, 16, 322);
+  ctx.fillText(`Collisions: ${showCollisions ? "ON" : "OFF"}`, 16, 358);
+  if (phase === "RACING" && runTimerSeconds !== null) {
     ctx.save();
     ctx.font = "22px 'Segoe UI', system-ui, sans-serif";
     ctx.fillStyle = "rgba(240, 250, 255, 0.95)";
@@ -212,13 +230,49 @@ export function renderHUD(ctx, hudState) {
     );
   }
   if (showTrackDebug) {
+    const cpCount = checkpointCount || 0;
+    const nextLabel = Number.isFinite(nextCheckpointThreshold)
+      ? nextCheckpointThreshold.toFixed(3)
+      : "n/a";
+    const windowLabel = Number.isFinite(progressWindowSegments)
+      ? progressWindowSegments
+      : "n/a";
+    ctx.fillText(
+      `CP idx: ${checkpointIndex}/${cpCount}  next t: ${nextLabel}  win: ${windowLabel}`,
+      16,
+      showNearMissDebug
+        ? boostY + (showPropDebug ? 178 + propDebugExtra + trafficDebugExtra : 160 + trafficDebugExtra)
+        : showPropDebug
+          ? boostY + 160 + propDebugExtra
+          : boostY + 142,
+    );
+  }
+  if (showTrackDebug) {
     const lastTLabel = Number.isFinite(lastProgress) ? lastProgress.toFixed(3) : "n/a";
     const lapUnwrappedLabel = Number.isFinite(lapProgressUnwrapped)
       ? lapProgressUnwrapped.toFixed(3)
       : "n/a";
-    const gateDLabel = Number.isFinite(gateD) ? gateD.toFixed(2) : "n/a";
+    const prevLapLabel = Number.isFinite(prevLapProgress)
+      ? prevLapProgress.toFixed(3)
+      : "n/a";
+    const predictedLabel = Number.isFinite(predictedProgressT)
+      ? predictedProgressT.toFixed(3)
+      : "n/a";
+    const chosenLabel = Number.isFinite(chosenProgressT)
+      ? chosenProgressT.toFixed(3)
+      : "n/a";
+    const rawDeltaLabel = Number.isFinite(rawProgressDelta)
+      ? rawProgressDelta.toFixed(4)
+      : "n/a";
+    const clampedDeltaLabel = Number.isFinite(clampedProgressDelta)
+      ? clampedProgressDelta.toFixed(4)
+      : "n/a";
+    const plausibleLabel = Number.isFinite(plausibleProgressDelta)
+      ? plausibleProgressDelta.toFixed(4)
+      : "n/a";
+    const clampLabel = branchSnapPrevented ? "YES" : "NO";
     ctx.fillText(
-      `t: ${progressT.toFixed(3)}  last: ${lastTLabel}  lap: ${lapUnwrappedLabel}`,
+      `t: ${progressT.toFixed(3)}  last: ${lastTLabel}  pred: ${predictedLabel}  chosen: ${chosenLabel}`,
       16,
       showNearMissDebug
         ? boostY + (showPropDebug ? 124 + propDebugExtra + trafficDebugExtra : 106 + trafficDebugExtra)
@@ -227,7 +281,7 @@ export function renderHUD(ctx, hudState) {
           : boostY + 88,
     );
     ctx.fillText(
-      `gate d: ${gateDLabel}  crossing: ${gateCrossed ? "YES" : "NO"}`,
+      `delta raw: ${rawDeltaLabel}  clamp: ${clampedDeltaLabel}  plaus: ${plausibleLabel}  branchSnapPrevented: ${clampLabel}`,
       16,
       showNearMissDebug
         ? boostY + (showPropDebug ? 142 + propDebugExtra + trafficDebugExtra : 124 + trafficDebugExtra)
@@ -303,7 +357,10 @@ export function drawCenterOverlay(ctx, overlayState) {
   ctx.textBaseline = "middle";
   ctx.lineWidth = Math.max(6, fontSize * 0.08);
   ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
-  ctx.fillStyle = "rgba(255, 240, 220, 0.98)";
+  ctx.fillStyle =
+    style === "checkpoint"
+      ? "rgba(120, 255, 220, 0.98)"
+      : "rgba(255, 240, 220, 0.98)";
   ctx.shadowColor = "rgba(0, 0, 0, 0.6)";
   ctx.shadowBlur = 18;
   ctx.strokeText(text, centerX, centerY);
@@ -324,11 +381,14 @@ export function drawFinishPanel(ctx, stats) {
     bestTime,
     newBestScore,
     newBestTime,
+    splitTimes,
+    bestSplitIndex,
   } = stats;
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   const panelWidth = Math.min(520, screenWidth * 0.7);
-  const panelHeight = 220;
+  const splitLines = splitTimes?.length || 0;
+  const panelHeight = 220 + splitLines * 22;
   const x = (screenWidth - panelWidth) / 2;
   const y = screenHeight * 0.56;
   ctx.fillStyle = "rgba(6, 8, 18, 0.82)";
@@ -356,10 +416,27 @@ export function drawFinishPanel(ctx, stats) {
     x + padding,
     y + padding + line * 3,
   );
-  if (newBestTime || newBestScore) {
+  const hasNewBest = newBestTime || newBestScore;
+  if (hasNewBest) {
     ctx.fillStyle = "rgba(120, 255, 220, 0.95)";
     ctx.font = "bold 18px 'Segoe UI', system-ui, sans-serif";
     ctx.fillText("NEW BEST!", x + padding, y + padding + line * 4);
+  }
+  if (splitLines) {
+    ctx.font = "16px 'Segoe UI', system-ui, sans-serif";
+    const splitBaseY = y + padding + line * (hasNewBest ? 5 : 4);
+    for (let i = 0; i < splitLines; i += 1) {
+      const prev = i === 0 ? 0 : splitTimes[i - 1];
+      const delta = splitTimes[i] - prev;
+      ctx.fillStyle = i === bestSplitIndex
+        ? "rgba(120, 255, 220, 0.95)"
+        : "rgba(220, 230, 245, 0.95)";
+      ctx.fillText(
+        `CP ${i + 1}: ${formatSplit(delta)}`,
+        x + padding,
+        splitBaseY + i * 20,
+      );
+    }
   }
   ctx.fillStyle = "rgba(210, 220, 240, 0.9)";
   ctx.font = "16px 'Segoe UI', system-ui, sans-serif";
@@ -377,6 +454,11 @@ function formatTime(seconds) {
   const secLabel = String(whole).padStart(2, "0");
   const fracLabel = String(frac).padStart(2, "0");
   return `${minLabel}:${secLabel}.${fracLabel}`;
+}
+
+function formatSplit(seconds) {
+  const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  return `+${safe.toFixed(2)}s`;
 }
 
 export function renderHelpOverlay(ctx, uiState) {
