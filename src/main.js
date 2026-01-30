@@ -4,7 +4,13 @@ import { ParticlePool } from "./particles.js";
 import { track, getSkylineKeyForDistrictId } from "./track.js";
 import { loadAssets } from "./assets.js";
 import { generateProps, generateLandmarks } from "./props.js";
-import { renderHUD, renderHelpOverlay, drawCenterOverlay, drawFinishPanel } from "./ui.js";
+import {
+  renderHUD,
+  renderHelpOverlay,
+  drawCenterOverlay,
+  drawFinishPanel,
+  renderNotifications,
+} from "./ui.js";
 import { generateBoostPads, updateBoostPads } from "./boostpads.js";
 import { createScoreState, resetRun, updateScore, registerNearMiss, SCORE } from "./score.js";
 import { drawCarSprite, CAR_RENDER_SIZE } from "./carRender.js";
@@ -86,10 +92,30 @@ const BULLY = {
 
 const BOOST = {
   accelMultiplier: 1.4,
-  maxSpeedMultiplier: 1.12,
+  maxSpeedMultiplier: 1.35,
   trailMultiplier: 1.6,
   triggerTrailBurst: 6,
+  impulse: 420,
+  flashDuration: 0.35,
+  driftBonus: 120,
+  strengthCap: 1.2,
+  dragReduction: 0.75,
 };
+
+const BOOST_PAD_TS = [
+  0.06,
+  0.12,
+  0.2,
+  0.28,
+  0.36,
+  0.44,
+  0.58,
+  0.62,
+  0.7,
+  0.78,
+  0.86,
+  0.93,
+];
 
 const RACE_PHASE = {
   PRE_RACE: "PRE_RACE",
@@ -110,6 +136,8 @@ const CHECKPOINTS = {
   flashDuration: 0.6,
 };
 
+const CHECKPOINT_TS_PER_LAP = [0.2, 0.4, 0.6, 0.8, 0.95];
+
 const PROGRESS_TRACKING = {
   windowSegments: 120,
   predictedClamp: 0.03,
@@ -120,6 +148,9 @@ const STORAGE_KEYS = {
   bestScore: "ndr_bestScore",
   bestTime: "ndr_bestTime",
 };
+
+const LAPS_TOTAL = 5;
+const FINISH_MIN_FORWARD = 40;
 
 const app = document.getElementById("app");
 const canvas = document.createElement("canvas");
@@ -150,6 +181,7 @@ const settings = {
   showNearMissDebug: false,
   enableBully: true,
   showHelp: false,
+  compactDebugPanel: false,
 };
 
 const impactState = {
@@ -212,6 +244,7 @@ const state = {
   fps: 0,
   fpsFrameCount: 0,
   fpsLastTime: performance.now(),
+  padsDrawnThisFrame: 0,
 };
 
 const car = {
@@ -233,6 +266,7 @@ const car = {
   boostTimer: 0,
   boostStrength: 1,
   boostDuration: 0,
+  boostImpulseLast: null,
   mass: 1,
   radius: TRAFFIC.collisionRadius,
 };
@@ -271,6 +305,25 @@ const raceState = {
   lastSplitDelta: null,
   checkpointFlashTime: null,
   checkpointFlashText: null,
+  boostFlashTime: null,
+  boostFlashText: null,
+  lastBoostPadIndex: null,
+  lastBoostTime: null,
+  lastBoostImpulse: null,
+  lastBoostSpeedDelta: null,
+  boostUpdateCalls: 0,
+  boostUpdateThisFrame: false,
+  boostDebug: null,
+  lastBoostTriggerTime: null,
+  lastBoostTriggerIndex: null,
+  lastBoostTriggerAttempt: null,
+  manualBoostCount: 0,
+  boostAppliedThisFrame: false,
+  finishDebug: null,
+  notifications: [],
+  finishCrossCount: 0,
+  perLapBase: 0,
+  finishGateCooldown: 0,
   bestSplitIndex: null,
 };
 
@@ -296,6 +349,11 @@ bestRunState.bestTime = loadStoredBestTime();
 function updateFixed() {
   const dt = FIXED_TIME_STEP / 1000;
   const now = performance.now();
+  raceState.boostUpdateThisFrame = false;
+  raceState.boostAppliedThisFrame = false;
+  if (raceState.notifications.length) {
+    raceState.notifications = raceState.notifications.filter((note) => now <= note.expiresAt);
+  }
 
   car.prevPosition.x = car.position.x;
   car.prevPosition.y = car.position.y;
@@ -362,6 +420,42 @@ function updateFixed() {
     settings.enableBully = !settings.enableBully;
   }
 
+  if (wasPressed("F3")) {
+    settings.compactDebugPanel = !settings.compactDebugPanel;
+  }
+
+  if (wasPressed("F4") && raceState.phase === RACE_PHASE.RACING) {
+    const forwardDir = {
+      x: Math.cos(car.heading),
+      y: Math.sin(car.heading),
+    };
+    const preSpeed = Math.hypot(car.vel.x, car.vel.y);
+    car.vel.x += forwardDir.x * BOOST.impulse;
+    car.vel.y += forwardDir.y * BOOST.impulse;
+    const maxBoostSpeed = PHYSICS.maxSpeedForward * BOOST.maxSpeedMultiplier;
+    const speed = Math.hypot(car.vel.x, car.vel.y);
+    if (speed > maxBoostSpeed) {
+      const scale = maxBoostSpeed / speed;
+      car.vel.x *= scale;
+      car.vel.y *= scale;
+    }
+    const postSpeed = Math.hypot(car.vel.x, car.vel.y);
+    car.boostActive = true;
+    car.boostTimer = Math.max(car.boostTimer, 0.95);
+    car.boostDuration = Math.max(car.boostDuration, 0.95);
+    raceState.boostFlashTime = now;
+    raceState.boostFlashText = "MANUAL BOOST";
+    raceState.lastBoostPadIndex = -1;
+    raceState.lastBoostTime = now;
+    raceState.lastBoostImpulse = BOOST.impulse;
+    raceState.lastBoostSpeedDelta = postSpeed - preSpeed;
+    raceState.lastBoostTriggerTime = now;
+    raceState.lastBoostTriggerIndex = -1;
+    raceState.manualBoostCount += 1;
+    raceState.boostAppliedThisFrame = true;
+    queueNotification("MANUAL BOOST", "boost", now, 0.6);
+  }
+
   if (wasPressed("F1") || (wasPressed("Slash") && isDown("Shift"))) {
     settings.showHelp = !settings.showHelp;
   }
@@ -374,14 +468,78 @@ function updateFixed() {
   const impact = resolveTrackCollision();
   resolveTrafficInteractions(dt);
   updateImpactState(dt, impact);
-  const boostEvent = updateBoostPads(car, boostPads, dt);
-  if (boostEvent) {
-    car.boostActive = true;
-    car.boostTimer = boostEvent.pad.duration;
-    car.boostDuration = boostEvent.pad.duration;
-    car.boostStrength = boostEvent.pad.strength;
+  if (raceState.finishGateCooldown > 0) {
+    raceState.finishGateCooldown = Math.max(0, raceState.finishGateCooldown - dt);
   }
-  updateParticles(dt, wasPressed("Space"), Boolean(boostEvent));
+  const prevLapProgressForBoost = raceState.lapProgressUnwrapped;
+  updateRaceProgress(now);
+  if (boostPads && boostPads._id === undefined) {
+    boostPads._id = Math.random().toString(36).slice(2);
+  }
+  const boostEvents =
+    updateBoostPads(
+      car,
+      boostPads,
+      dt,
+      raceState.phase,
+      raceState.lapProgressUnwrapped,
+      prevLapProgressForBoost,
+      {
+        duration: 0.95,
+        cooldown: 2.0,
+        impulse: BOOST.impulse,
+      },
+    ) || [];
+  raceState.boostUpdateCalls += 1;
+  raceState.boostUpdateThisFrame = true;
+  raceState.boostDebug = boostPads?._debug ?? null;
+  if (boostEvents.length) {
+    for (const boostEvent of boostEvents) {
+      const pad = boostEvent.pad;
+      const preSpeed = Math.hypot(car.vel.x, car.vel.y);
+      car.vel.x += pad.tangent.x * BOOST.impulse;
+      car.vel.y += pad.tangent.y * BOOST.impulse;
+      const maxBoostSpeed = PHYSICS.maxSpeedForward * BOOST.maxSpeedMultiplier;
+      const speed = Math.hypot(car.vel.x, car.vel.y);
+      if (speed > maxBoostSpeed) {
+        const scale = maxBoostSpeed / speed;
+        car.vel.x *= scale;
+        car.vel.y *= scale;
+      }
+      const postSpeed = Math.hypot(car.vel.x, car.vel.y);
+      car.boostActive = true;
+      car.boostTimer = Math.max(car.boostTimer, pad.duration);
+      car.boostDuration = Math.max(car.boostDuration, pad.duration);
+      car.boostStrength = Math.min(
+        BOOST.strengthCap,
+        Math.max(car.boostStrength, pad.strength),
+      );
+      raceState.boostFlashTime = now;
+      if (car.driftActive && raceState.phase === RACE_PHASE.RACING) {
+        raceState.boostFlashText = "DRIFT BOOST!";
+        scoreState.score += BOOST.driftBonus * scoreState.multiplier;
+        scoreState.runScore = scoreState.score;
+        scoreState.comboTimer = Math.max(scoreState.comboTimer, 0.4);
+      } else {
+        raceState.boostFlashText = "BOOST!";
+      }
+      raceState.lastBoostPadIndex = boostEvent.index;
+      raceState.lastBoostTime = now;
+      raceState.lastBoostImpulse = BOOST.impulse;
+      raceState.lastBoostSpeedDelta = postSpeed - preSpeed;
+      raceState.lastBoostTriggerTime = now;
+      raceState.lastBoostTriggerIndex = boostEvent.index;
+      raceState.lastBoostTriggerAttempt = {
+        index: boostEvent.index,
+        dist: boostEvent.debug?.dist ?? null,
+        time: now,
+      };
+      raceState.boostFlashText = `TRIGGERED PAD ${boostEvent.index + 1}`;
+      raceState.boostAppliedThisFrame = true;
+      queueNotification(raceState.boostFlashText, "boost", now, 0.6);
+    }
+  }
+  updateParticles(dt, wasPressed("Space"), boostEvents.length > 0);
   if (impact && settings.showParticles) {
     spawnImpactSparks(impact);
   }
@@ -395,8 +553,6 @@ function updateFixed() {
       impact ? impact.strength : 0,
     );
   }
-  updateRaceProgress(now);
-
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
   camera.position.y = lerp(camera.position.y, car.position.y, cameraFollow);
@@ -404,6 +560,7 @@ function updateFixed() {
 }
 
 function render(alpha) {
+  state.padsDrawnThisFrame = 0;
   if (settings.showMotionBlur) {
     context.save();
     context.fillStyle = "rgba(5, 6, 11, 0.16)";
@@ -471,7 +628,10 @@ function render(alpha) {
 
   drawBackgroundGrid(renderCamera);
   drawTrack();
-  drawBoostPads(boostPads);
+  drawBoostPads(boostPads, renderCarPos);
+  if (settings.showTrackDebug) {
+    drawBoostPadsScreenDebug(boostPads);
+  }
   if (settings.showNeonProps) {
     drawProps(landmarks);
     drawProps(props);
@@ -520,6 +680,7 @@ function render(alpha) {
   }
 
   drawHud(renderCamera);
+  renderNotifications(context, raceState.notifications, state.width);
   renderHelpOverlay(context, {
     showHelp: settings.showHelp,
     showSkyline: settings.showSkyline,
@@ -1002,6 +1163,18 @@ function drawHud(renderCamera) {
     : null;
   const nextCheckpoint = raceState.checkpoints[raceState.currentCheckpointIndex];
   const nextCheckpointThreshold = nextCheckpoint ? nextCheckpoint.t : null;
+  const boostReady =
+    raceState.phase === RACE_PHASE.RACING &&
+    boostPads.some((pad) => pad.cooldownTimer <= 0);
+  const boostStatus = car.boostActive ? "ACTIVE" : boostReady ? "READY" : "COOLDOWN";
+  const boostSpriteLoaded = Boolean(
+    assets?.abstractArrows &&
+      assets.abstractArrows.width > 0 &&
+      assets.abstractArrows.height > 0,
+  );
+  const boostTimeAgo = raceState.lastBoostTime
+    ? (performance.now() - raceState.lastBoostTime) / 1000
+    : null;
 
   renderHUD(context, {
     fps: state.fps,
@@ -1017,6 +1190,25 @@ function drawHud(renderCamera) {
     particleCount,
     trailRate: particleState.trailRate,
     roadStatus,
+    boostStatus,
+    boostSpriteLoaded,
+    boostPadCount: Array.isArray(boostPads) ? boostPads.length : 0,
+    padsDrawnThisFrame: state.padsDrawnThisFrame,
+    lastBoostPadIndex: raceState.lastBoostPadIndex,
+    lastBoostTimeAgo: boostTimeAgo,
+    boostTimerRemaining: car.boostTimer,
+    lastBoostImpulse: raceState.lastBoostImpulse,
+    lastBoostSpeedDelta: raceState.lastBoostSpeedDelta,
+    racePhase: raceState.phase,
+    boostUpdateCalls: raceState.boostUpdateCalls,
+    boostUpdateThisFrame: raceState.boostUpdateThisFrame,
+    boostDebug: raceState.boostDebug,
+    lastBoostTriggerTime: raceState.lastBoostTriggerTime,
+    lastBoostTriggerIndex: raceState.lastBoostTriggerIndex,
+    lastBoostTriggerAttempt: raceState.lastBoostTriggerAttempt,
+    manualBoostCount: raceState.manualBoostCount,
+    boostAppliedThisFrame: raceState.boostAppliedThisFrame,
+    compactDebugPanel: settings.compactDebugPanel,
     showPropDebug: settings.showPropDebug,
     showCollisions: settings.showCollisions,
     propCount,
@@ -1038,7 +1230,10 @@ function drawHud(renderCamera) {
     trafficStats,
     raceArmed: raceState.raceArmed,
     raceFinished: raceState.raceFinished,
+    finishDebug: raceState.finishDebug,
     lapProgress,
+    finishCrossCount: raceState.finishCrossCount,
+    lapsTotal: LAPS_TOTAL,
     startT: Number.isFinite(track.startT) ? track.startT : 0,
     progressT,
     lastProgress: raceState.prevProgressT,
@@ -1077,6 +1272,81 @@ function wrapDiffSigned(a, b) {
   if (delta > 0.5) delta -= 1;
   if (delta < -0.5) delta += 1;
   return delta;
+}
+
+function queueNotification(text, type, now, duration = 0.6) {
+  raceState.notifications.push({
+    text,
+    type,
+    expiresAt: now + duration * 1000,
+  });
+}
+
+function getBoostDebugSnapshot(pads, carRef) {
+  if (!Array.isArray(pads) || pads.length === 0) {
+    return null;
+  }
+  let bestIndex = 0;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < pads.length; i += 1) {
+    const pad = pads[i];
+    if (!pad || !pad.position) {
+      continue;
+    }
+    const dx = carRef.position.x - pad.position.x;
+    const dy = carRef.position.y - pad.position.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIndex = i;
+    }
+  }
+  const pad = pads[bestIndex];
+  if (!pad || !pad.position) {
+    return null;
+  }
+  return {
+    index: bestIndex,
+    dist: bestDist,
+    radius: pad.triggerRadius,
+    cooldown: pad.cooldownTimer,
+  };
+}
+
+function buildBoostPadsFromTs(trackRef) {
+  return BOOST_PAD_TS.map((t, index) => {
+    const sample = trackRef.getPointAtProgress(t);
+    return {
+      id: index,
+      t,
+      position: createVec2(sample.point.x, sample.point.y),
+      tangent: sample.tangent,
+      normal: sample.normal,
+      radius: 34,
+      triggerRadius: 220,
+      strength: 1.0,
+      duration: 0.75,
+      cooldown: 2.0,
+      cooldownTimer: 0,
+    };
+  });
+}
+
+function ensureBoostPads(trackRef, pads) {
+  if (!Array.isArray(pads) || pads.length !== BOOST_PAD_TS.length) {
+    return buildBoostPadsFromTs(trackRef);
+  }
+  let needsRepair = false;
+  for (const pad of pads) {
+    if (!pad || !pad.position || !Number.isFinite(pad.position.x) || !Number.isFinite(pad.position.y)) {
+      needsRepair = true;
+      break;
+    }
+  }
+  if (needsRepair) {
+    return buildBoostPadsFromTs(trackRef);
+  }
+  return pads;
 }
 
 function getTrafficStats(trackRef, system, renderStats) {
@@ -1222,7 +1492,10 @@ function updateCarPhysics(dt, controlsLocked = false) {
   const lateralDamp = car.driftActive
     ? PHYSICS.lateralDampDrift
     : PHYSICS.lateralDampGrip;
-  const forwardDrag = car.driftActive ? PHYSICS.forwardDrag * 0.6 : PHYSICS.forwardDrag;
+  let forwardDrag = car.driftActive ? PHYSICS.forwardDrag * 0.6 : PHYSICS.forwardDrag;
+  if (car.boostActive) {
+    forwardDrag *= BOOST.dragReduction;
+  }
 
   vl *= Math.exp(-lateralDamp * dt);
   vf *= Math.exp(-forwardDrag * dt);
@@ -1416,25 +1689,7 @@ function getOverlayState() {
       style: "go",
     };
   }
-  if (phase === RACE_PHASE.RACING && raceState.checkpointFlashTime) {
-    const elapsed = (performance.now() - raceState.checkpointFlashTime) / 1000;
-    if (elapsed <= CHECKPOINTS.flashDuration) {
-      return {
-        text: raceState.checkpointFlashText || "CHECKPOINT",
-        screenWidth: state.width,
-        screenHeight: state.height,
-        style: "checkpoint",
-      };
-    }
-  }
-  if (phase === RACE_PHASE.FINISHED && !shouldShowFinishPanel()) {
-    return {
-      text: "FINISH!",
-      screenWidth: state.width,
-      screenHeight: state.height,
-      style: "finish",
-    };
-  }
+  // Notifications handle checkpoint/boost/finish pops.
   return null;
 }
 
@@ -1584,46 +1839,78 @@ function updateRaceProgress(now) {
   const finishGate = track.getFinishGate();
   const gatePos = finishGate.gatePos || finishGate.pos;
   const gateNormal = finishGate.gateNormal || finishGate.normal;
+  const gateTangent =
+    finishGate.gateTangent || finishGate.tangent || track.getPointAtProgress(track.startT).tangent;
   const dx = car.position.x - gatePos.x;
   const dy = car.position.y - gatePos.y;
   const d = dx * gateNormal.x + dy * gateNormal.y;
   const prevGateD = raceState.prevGateD;
-  const crossing = prevGateD !== null && prevGateD < 0 && d >= 0;
+  const forwardDot = gateTangent
+    ? car.vel.x * gateTangent.x + car.vel.y * gateTangent.y
+    : car.speed;
+  const crossing =
+    prevGateD !== null && prevGateD < 0 && d >= 0 && forwardDot > FINISH_MIN_FORWARD;
   raceState.gateD = d;
   raceState.gateCrossed = crossing;
   raceState.prevGateD = d;
 
-  if (raceState.phase === RACE_PHASE.RACING && raceState.checkpoints.length) {
-    while (raceState.currentCheckpointIndex < raceState.checkpoints.length) {
+  const perLapProgress = Math.max(0, raceState.lapProgressUnwrapped - raceState.perLapBase);
+  if (raceState.phase === RACE_PHASE.RACING && CHECKPOINT_TS_PER_LAP.length) {
+    while (raceState.currentCheckpointIndex < CHECKPOINT_TS_PER_LAP.length) {
       const index = raceState.currentCheckpointIndex;
-      const target = raceState.checkpoints[index];
-      if (raceState.lapProgressUnwrapped >= target.t) {
+      const targetT = CHECKPOINT_TS_PER_LAP[index];
+      if (perLapProgress >= targetT) {
         const elapsed = raceState.runElapsed;
         const prevSplit = index > 0 ? raceState.splitTimes[index - 1] : 0;
         raceState.splitTimes[index] = elapsed;
         raceState.lastSplitDelta = elapsed - prevSplit;
         raceState.currentCheckpointIndex += 1;
         raceState.checkpointFlashTime = now;
-        raceState.checkpointFlashText = `CHECKPOINT ${raceState.currentCheckpointIndex}/${raceState.checkpoints.length}`;
+        raceState.checkpointFlashText = `CHECKPOINT ${raceState.currentCheckpointIndex}/${CHECKPOINT_TS_PER_LAP.length}`;
+        queueNotification(raceState.checkpointFlashText, "checkpoint", now, 0.6);
       } else {
         break;
       }
     }
   }
   raceState.prevLapProgress = raceState.lapProgressUnwrapped;
+  raceState.finishDebug = {
+    evaluated: true,
+    t: raceState.lastProgress,
+    unwrapped: raceState.lapProgressUnwrapped,
+    perLap: perLapProgress,
+    gateD: raceState.gateD,
+    prevGateD,
+    crossed: crossing,
+    forward: forwardDot,
+    cooldown: raceState.finishGateCooldown,
+    allowed: raceState.phase === RACE_PHASE.RACING,
+    finishCrossCount: raceState.finishCrossCount,
+  };
 
   if (
-    raceState.raceArmed &&
-    !raceState.raceFinished &&
     raceState.phase === RACE_PHASE.RACING &&
-    raceState.lapProgressUnwrapped >= 1
+    crossing &&
+    raceState.finishGateCooldown === 0
   ) {
-    raceState.raceFinished = true;
-    raceState.phase = RACE_PHASE.FINISHED;
-    raceState.finishStartTime = now;
-    raceState.runElapsed = getRunElapsedSeconds(now);
-    raceState.bestSplitIndex = getBestSplitIndex(raceState.splitTimes);
-    updateBestRunStats();
+    raceState.finishCrossCount += 1;
+    raceState.finishGateCooldown = 1.0;
+    if (raceState.finishCrossCount >= LAPS_TOTAL) {
+      raceState.raceFinished = true;
+      raceState.phase = RACE_PHASE.FINISHED;
+      raceState.finishStartTime = now;
+      raceState.runElapsed = getRunElapsedSeconds(now);
+      raceState.bestSplitIndex = getBestSplitIndex(raceState.splitTimes);
+      updateBestRunStats();
+      queueNotification("FINISH!", "finish", now, 0.8);
+    } else {
+      const nextLap = Math.min(raceState.finishCrossCount + 1, LAPS_TOTAL);
+      queueNotification(`LAP ${nextLap}/${LAPS_TOTAL}`, "lap", now, 0.7);
+      raceState.perLapBase += 1;
+      raceState.currentCheckpointIndex = 0;
+      raceState.splitTimes = [];
+      raceState.lastSplitDelta = null;
+    }
   }
 }
 
@@ -1683,7 +1970,22 @@ function resetToStart() {
   raceState.lastSplitDelta = null;
   raceState.checkpointFlashTime = null;
   raceState.checkpointFlashText = null;
+  raceState.boostFlashTime = null;
+  raceState.boostFlashText = null;
+  raceState.lastBoostPadIndex = null;
+  raceState.lastBoostTime = null;
+  raceState.lastBoostImpulse = null;
+  raceState.lastBoostSpeedDelta = null;
+  raceState.lastBoostTriggerTime = null;
+  raceState.lastBoostTriggerIndex = null;
+  raceState.lastBoostTriggerAttempt = null;
+  raceState.manualBoostCount = 0;
+  raceState.boostAppliedThisFrame = false;
+  raceState.finishCrossCount = 0;
+  raceState.perLapBase = 0;
+  raceState.finishGateCooldown = 0;
   raceState.bestSplitIndex = null;
+  boostPads = ensureBoostPads(track, generateBoostPads(track));
   const finishGate = track.getFinishGate();
   const gatePos = finishGate.gatePos || finishGate.pos;
   const gateNormal = finishGate.gateNormal || finishGate.normal;
@@ -1698,20 +2000,79 @@ function resetToStart() {
   resetRun(scoreState);
 }
 
-function drawBoostPads(pads) {
+function drawBoostPads(pads, renderCarPos) {
   if (!pads.length) {
     return;
   }
-
+  const sprite = assets?.abstractArrows;
+  const spriteLoaded = Boolean(sprite && sprite.width > 0 && sprite.height > 0);
+  const baseLength = Math.max(160, track.width * 1.6);
+  const baseThickness = Math.max(40, track.width * 0.4);
   context.save();
-  context.strokeStyle = "rgba(120, 255, 220, 0.45)";
-  context.lineWidth = 2;
+  context.globalCompositeOperation = "source-over";
   for (let i = 0; i < pads.length; i += 1) {
     const pad = pads[i];
-    const pulse = 0.9 + 0.1 * Math.sin(performance.now() * 0.004 + i);
-    context.beginPath();
-    context.arc(pad.position.x, pad.position.y, pad.radius * pulse, 0, Math.PI * 2);
-    context.stroke();
+    if (!pad || !pad.position) {
+      continue;
+    }
+    const padT = Number.isFinite(pad.t)
+      ? pad.t
+      : track.getProgressAlongTrack(pad.position);
+    const sample = track.getPointAtProgress(padT);
+    const position = pad.position || sample.point;
+    const tangent = pad.tangent || sample.tangent;
+    if (!position || !tangent) {
+      continue;
+    }
+    pad.t = padT;
+    pad.position = position;
+    pad.tangent = tangent;
+    const pulse = 0.95 + 0.08 * Math.sin(performance.now() * 0.004 + i);
+    const angle = Math.atan2(tangent.y, tangent.x);
+    const length = baseLength * pulse;
+    const thickness = baseThickness * pulse;
+    context.save();
+    context.translate(position.x, position.y);
+    context.rotate(angle);
+    context.globalAlpha = 0.9;
+    drawBoostPadStrip(context, length, thickness, "rgba(120, 255, 220, 0.85)");
+    if (spriteLoaded) {
+      const spriteHeight = (length * sprite.height) / sprite.width;
+      context.globalAlpha = 0.85;
+      context.drawImage(sprite, -length / 2, -spriteHeight / 2, length, spriteHeight);
+    }
+    context.restore();
+    context.save();
+    context.globalCompositeOperation = "lighter";
+    context.translate(position.x, position.y);
+    context.rotate(angle);
+    context.globalAlpha = 0.35;
+    drawBoostPadStrip(context, length * 1.08, thickness * 1.08, "rgba(140, 255, 240, 0.6)");
+    context.restore();
+    state.padsDrawnThisFrame += 1;
+    if (settings.showTrackDebug) {
+      context.save();
+      context.strokeStyle = "rgba(120, 255, 220, 0.55)";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.arc(position.x, position.y, pad.triggerRadius, 0, Math.PI * 2);
+      context.stroke();
+      context.fillStyle = "rgba(220, 245, 255, 0.9)";
+      context.font = "11px 'Segoe UI', system-ui, sans-serif";
+      context.textBaseline = "middle";
+      context.fillText(`${pad.id + 1} (${pad.t.toFixed(2)})`, position.x + 10, position.y);
+      if (renderCarPos) {
+        const dist = Math.hypot(
+          renderCarPos.x - position.x,
+          renderCarPos.y - position.y,
+        );
+        if (dist <= pad.triggerRadius + 40) {
+          const cooldown = pad.cooldownTimer.toFixed(1);
+          context.fillText(`cd ${cooldown}s`, position.x + 10, position.y + 12);
+        }
+      }
+      context.restore();
+    }
   }
   context.restore();
 }
@@ -1720,18 +2081,97 @@ function drawBoostPadGlow(pads) {
   if (!pads.length) {
     return;
   }
-
+  const sprite = assets?.abstractArrows;
+  const spriteLoaded = Boolean(sprite && sprite.width > 0 && sprite.height > 0);
+  const baseLength = Math.max(170, track.width * 1.75);
+  const baseThickness = Math.max(42, track.width * 0.45);
   context.save();
-  context.strokeStyle = "rgba(140, 255, 240, 0.5)";
-  context.lineWidth = 4;
+  context.globalCompositeOperation = "lighter";
   for (let i = 0; i < pads.length; i += 1) {
     const pad = pads[i];
-    const pulse = 1 + 0.08 * Math.sin(performance.now() * 0.004 + i);
-    context.beginPath();
-    context.arc(pad.position.x, pad.position.y, pad.radius * pulse, 0, Math.PI * 2);
-    context.stroke();
+    if (!pad || !pad.position) {
+      continue;
+    }
+    const padT = Number.isFinite(pad.t)
+      ? pad.t
+      : track.getProgressAlongTrack(pad.position);
+    const sample = track.getPointAtProgress(padT);
+    const position = pad.position || sample.point;
+    const tangent = pad.tangent || sample.tangent;
+    if (!position || !tangent) {
+      continue;
+    }
+    pad.t = padT;
+    pad.position = position;
+    pad.tangent = tangent;
+    const pulse = 1 + 0.06 * Math.sin(performance.now() * 0.004 + i);
+    const angle = Math.atan2(tangent.y, tangent.x);
+    const length = baseLength * pulse;
+    const thickness = baseThickness * pulse;
+    context.save();
+    context.translate(position.x, position.y);
+    context.rotate(angle);
+    context.globalAlpha = 0.3;
+    drawBoostPadStrip(context, length, thickness, "rgba(140, 255, 240, 0.5)");
+    if (spriteLoaded) {
+      const spriteHeight = (length * sprite.height) / sprite.width;
+      context.globalAlpha = 0.25;
+      context.drawImage(sprite, -length / 2, -spriteHeight / 2, length, spriteHeight);
+    }
+    context.restore();
   }
   context.restore();
+}
+
+function drawBoostPadsScreenDebug(pads) {
+  if (!pads.length) {
+    return;
+  }
+  context.save();
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.globalCompositeOperation = "source-over";
+  context.font = "12px 'Segoe UI', system-ui, sans-serif";
+  context.textBaseline = "middle";
+  for (let i = 0; i < pads.length; i += 1) {
+    const y = 80 + i * 22;
+    context.fillStyle = "magenta";
+    context.fillRect(40, y, 180, 16);
+    context.fillStyle = "white";
+    context.fillText(`Pad ${i + 1}`, 50, y + 8);
+  }
+  context.restore();
+}
+
+function drawBoostPadStrip(ctx, length, thickness, color) {
+  const radius = Math.min(10, thickness * 0.35);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-length / 2 + radius, -thickness / 2);
+  ctx.lineTo(length / 2 - radius, -thickness / 2);
+  ctx.quadraticCurveTo(length / 2, -thickness / 2, length / 2, -thickness / 2 + radius);
+  ctx.lineTo(length / 2, thickness / 2 - radius);
+  ctx.quadraticCurveTo(length / 2, thickness / 2, length / 2 - radius, thickness / 2);
+  ctx.lineTo(-length / 2 + radius, thickness / 2);
+  ctx.quadraticCurveTo(-length / 2, thickness / 2, -length / 2, thickness / 2 - radius);
+  ctx.lineTo(-length / 2, -thickness / 2 + radius);
+  ctx.quadraticCurveTo(-length / 2, -thickness / 2, -length / 2 + radius, -thickness / 2);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(230, 255, 255, 0.85)";
+  const chevronCount = 3;
+  const chevronWidth = length * 0.18;
+  const chevronHeight = thickness * 0.55;
+  const startX = -length * 0.22;
+  for (let i = 0; i < chevronCount; i += 1) {
+    const x = startX + i * chevronWidth;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x - chevronWidth * 0.45, -chevronHeight / 2);
+    ctx.lineTo(x - chevronWidth * 0.45, chevronHeight / 2);
+    ctx.closePath();
+    ctx.fill();
+  }
 }
 
 function updateParticles(dt, handbrakePressed, boostTriggered) {
@@ -2001,6 +2441,12 @@ function drawTrackDebug(renderCarPos) {
   context.beginPath();
   context.arc(gatePos.x, gatePos.y, 5, 0, Math.PI * 2);
   context.fill();
+  context.strokeStyle = "rgba(255, 180, 120, 0.9)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(gatePos.x, gatePos.y);
+  context.lineTo(gatePos.x + gateNormal.x * 40, gatePos.y + gateNormal.y * 40);
+  context.stroke();
 
   const checkpoints = raceState.checkpoints.length
     ? raceState.checkpoints
@@ -2191,7 +2637,7 @@ async function loadGameAssets() {
   }
   props = generateProps(track, 202602);
   landmarks = generateLandmarks(track, 5067);
-  boostPads = generateBoostPads(track, 90210);
+  boostPads = ensureBoostPads(track, generateBoostPads(track));
   trafficState.system = createTrafficSystem(track, 77123);
   trafficState.carSprites = trafficState.system.cars.map(
     (car) => ["npcSedan", "npcCoupe", "npcMuscle", "npcTaxi", "npcBike"][car.id % 5],

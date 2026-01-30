@@ -1,140 +1,155 @@
-import { createVec2, clamp } from "./math.js";
+import { createVec2 } from "./math.js";
 
-const BOOST_CONSTANTS = {
-  minPads: 6,
-  maxPads: 10,
-  minSpacing: 420,
-  baseRadius: 36,
-  baseStrength: 1.35,
-  baseDuration: 0.9,
-  baseCooldown: 4,
+export const BOOST_PAD_TS = [
+  0.06,
+  0.12,
+  0.2,
+  0.28,
+  0.36,
+  0.44,
+  0.58,
+  0.62,
+  0.7,
+  0.78,
+  0.86,
+  0.93,
+];
+
+const BOOST_PAD_CONFIG = {
+  radius: 34,
+  triggerRadius: 140,
+  duration: 0.95,
+  cooldown: 2.0,
+  strength: 1.0,
 };
 
-function mulberry32(seed) {
-  return function random() {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+export function generateBoostPads(track) {
+  return BOOST_PAD_TS.map((t, index) => {
+    const sample = track.getPointAtProgress(t);
+    return {
+      id: index,
+      t,
+      position: createVec2(sample.point.x, sample.point.y),
+      tangent: sample.tangent,
+      normal: sample.normal,
+      radius: BOOST_PAD_CONFIG.radius,
+      triggerRadius: BOOST_PAD_CONFIG.triggerRadius,
+      strength: BOOST_PAD_CONFIG.strength,
+      duration: BOOST_PAD_CONFIG.duration,
+      cooldown: BOOST_PAD_CONFIG.cooldown,
+      cooldownTimer: 0,
+    };
+  });
 }
 
-function getTangent(points, index) {
-  const prevIndex = (index - 1 + points.length) % points.length;
-  const nextIndex = (index + 1) % points.length;
-  const prev = points[prevIndex];
-  const next = points[nextIndex];
-  const tx = next.x - prev.x;
-  const ty = next.y - prev.y;
-  const len = Math.hypot(tx, ty) || 1;
-  return { x: tx / len, y: ty / len };
-}
-
-function getCurvature(points, index) {
-  const prevIndex = (index - 1 + points.length) % points.length;
-  const nextIndex = (index + 1) % points.length;
-  const prev = points[prevIndex];
-  const curr = points[index];
-  const next = points[nextIndex];
-  const ax = curr.x - prev.x;
-  const ay = curr.y - prev.y;
-  const bx = next.x - curr.x;
-  const by = next.y - curr.y;
-  const aLen = Math.hypot(ax, ay) || 1;
-  const bLen = Math.hypot(bx, by) || 1;
-  const dot = (ax * bx + ay * by) / (aLen * bLen);
-  return 1 - clamp(dot, -1, 1);
-}
-
-function distanceSq(a, b) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return dx * dx + dy * dy;
-}
-
-export function generateBoostPads(track, seed = 2401) {
-  const rng = mulberry32(seed);
-  const points = track.centerline;
-  const candidates = [];
-
-  for (let i = 0; i < points.length; i += 1) {
-    const curvature = getCurvature(points, i);
-    candidates.push({ index: i, weight: curvature });
-  }
-
-  candidates.sort((a, b) => b.weight - a.weight);
-
-  const targetCount =
-    BOOST_CONSTANTS.minPads +
-    Math.floor(rng() * (BOOST_CONSTANTS.maxPads - BOOST_CONSTANTS.minPads + 1));
-
-  const pads = [];
-  const minSpacingSq = BOOST_CONSTANTS.minSpacing ** 2;
-
-  for (let i = 0; i < candidates.length && pads.length < targetCount; i += 1) {
-    const candidate = candidates[i];
-    if (rng() < 0.35 && i > points.length * 0.15) {
-      continue;
-    }
-
-    const base = points[candidate.index];
-    const tangent = getTangent(points, candidate.index);
-    const offset = 20 + rng() * 40;
-    const position = createVec2(
-      base.x + tangent.x * offset,
-      base.y + tangent.y * offset,
-    );
-
-    let tooClose = false;
-    for (let j = 0; j < pads.length; j += 1) {
-      if (distanceSq(position, pads[j].position) < minSpacingSq) {
-        tooClose = true;
-        break;
+export function updateBoostPads(
+  car,
+  pads,
+  dt,
+  phase,
+  lapProgress,
+  prevLapProgress,
+  boostConfig,
+) {
+  const triggered = [];
+  const playerWorldPos = car.position;
+  const padsLen = Array.isArray(pads) ? pads.length : 0;
+  let nearestIndex = -1;
+  let nearestDistSq = Number.POSITIVE_INFINITY;
+  if (padsLen && playerWorldPos) {
+    for (let i = 0; i < padsLen; i += 1) {
+      const pad = pads[i];
+      if (!pad || !pad.position) {
+        continue;
+      }
+      const dx = playerWorldPos.x - pad.position.x;
+      const dy = playerWorldPos.y - pad.position.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearestIndex = i;
       }
     }
-    if (tooClose) {
-      continue;
-    }
-
-    pads.push({
-      position,
-      radius: BOOST_CONSTANTS.baseRadius,
-      strength: BOOST_CONSTANTS.baseStrength,
-      duration: BOOST_CONSTANTS.baseDuration,
-      cooldown: BOOST_CONSTANTS.baseCooldown,
-      cooldownTimer: 0,
-    });
   }
-
-  return pads;
-}
-
-export function updateBoostPads(car, pads, dt) {
-  let triggered = null;
+  const debugInfo = {
+    padsLen,
+    firstPadId: padsLen ? pads[0]?.id ?? null : null,
+    lastPadId: padsLen ? pads[padsLen - 1]?.id ?? null : null,
+    padsId: pads?._id ?? null,
+    nearestIndex,
+    distUsed: null,
+    radiusUsed: null,
+    inRangeUsed: null,
+    cdUsed: null,
+    phaseUsed: phase,
+    skipReason: null,
+  };
 
   for (let i = 0; i < pads.length; i += 1) {
     const pad = pads[i];
+    if (!pad || !pad.position || !playerWorldPos) {
+      if (i === nearestIndex && !debugInfo.skipReason) {
+        debugInfo.skipReason = "pad_invalid";
+      }
+      continue;
+    }
     if (pad.cooldownTimer > 0) {
       pad.cooldownTimer = Math.max(0, pad.cooldownTimer - dt);
     }
-
-    if (pad.cooldownTimer > 0) {
+    if (i === nearestIndex) {
+      const dxUsed = playerWorldPos.x - pad.position.x;
+      const dyUsed = playerWorldPos.y - pad.position.y;
+      const distUsed = Math.hypot(dxUsed, dyUsed);
+      debugInfo.distUsed = distUsed;
+      debugInfo.radiusUsed = pad.triggerRadius;
+      debugInfo.inRangeUsed = distUsed <= pad.triggerRadius;
+      debugInfo.cdUsed = pad.cooldownTimer;
+    }
+    if (phase !== "RACING") {
+      if (i === nearestIndex && !debugInfo.skipReason) {
+        debugInfo.skipReason = "phase";
+      }
       continue;
     }
-
-    const dx = car.position.x - pad.position.x;
-    const dy = car.position.y - pad.position.y;
+    if (pad.cooldownTimer > 0) {
+      if (i === nearestIndex && !debugInfo.skipReason) {
+        debugInfo.skipReason = "cooldown";
+      }
+      continue;
+    }
+    const dx = playerWorldPos.x - pad.position.x;
+    const dy = playerWorldPos.y - pad.position.y;
     const distSq = dx * dx + dy * dy;
-    if (distSq <= pad.radius * pad.radius) {
-      pad.cooldownTimer = pad.cooldown;
-      triggered = {
+    if (distSq <= pad.triggerRadius * pad.triggerRadius) {
+      console.log("BOOST TRIGGER", i + 1, Math.sqrt(distSq).toFixed(1), pad.triggerRadius, pad.cooldownTimer, phase);
+      pad.cooldownTimer = Number.isFinite(pad.cooldown) ? pad.cooldown : boostConfig?.cooldown ?? 2;
+      car.boostActive = true;
+      car.boostTimer = Math.max(car.boostTimer || 0, boostConfig?.duration ?? pad.duration ?? 0.95);
+      car.boostDuration = Math.max(car.boostDuration || 0, boostConfig?.duration ?? pad.duration ?? 0.95);
+      car.boostImpulseLast = boostConfig?.impulse ?? null;
+      triggered.push({
         pad,
-        position: pad.position,
-      };
+        index: i,
+        debug: {
+          dist: Math.sqrt(distSq),
+          radius: pad.triggerRadius,
+        },
+      });
+      if (i === nearestIndex) {
+        debugInfo.skipReason = "triggered";
+      }
+      break;
+    } else if (i === nearestIndex && !debugInfo.skipReason) {
+      debugInfo.skipReason = "distance";
     }
   }
 
+  pads._debug = debugInfo;
   return triggered;
 }
 
-export const BOOST_CONFIG = BOOST_CONSTANTS;
+export const BOOST_CONFIG = BOOST_PAD_CONFIG;
+
+export function getBoostPadCount(pads) {
+  return Array.isArray(pads) ? pads.length : 0;
+}
