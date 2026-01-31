@@ -1,4 +1,4 @@
-import { isDown, wasPressed, endFrame } from "./input.js";
+import { isDown, wasPressed, endFrame, getMenuInput } from "./input.js";
 import { createVec2, clamp, lerp } from "./math.js";
 import { ParticlePool } from "./particles.js";
 import { track, getSkylineKeyForDistrictId } from "./track.js";
@@ -10,12 +10,19 @@ import {
   drawCenterOverlay,
   drawFinishPanel,
   renderNotifications,
+  createStartScreenState,
+  renderStartScreen,
+  updateStartScreenState,
+  setStartScreenBackground,
+  resetStartScreenState,
+  START_MENU_ITEMS,
 } from "./ui.js";
 import { generateBoostPads, updateBoostPads } from "./boostpads.js";
 import { createScoreState, resetRun, updateScore, registerNearMiss, SCORE } from "./score.js";
 import { drawCarSprite, CAR_RENDER_SIZE } from "./carRender.js";
 import { createTrafficSystem } from "./traffic.js";
 import { drawSkylineLayer, drawSkylineFallback } from "./skyline.js";
+import { createAudioManager } from "./audio.js";
 
 const VERSION = "v0.2.0";
 const FIXED_TIME_STEP = 1000 / 60;
@@ -125,6 +132,13 @@ const RACE_PHASE = {
   FINISHED: "FINISHED",
 };
 
+const GAME_STATE = {
+  START_SCREEN: "START_SCREEN",
+  COUNTDOWN: "COUNTDOWN",
+  RACING: "RACING",
+  FINISHED: "FINISHED",
+};
+
 const RACE_TIMING = {
   autoStartDelay: 0.5,
   countdownStep: 1.0,
@@ -151,6 +165,27 @@ const STORAGE_KEYS = {
 
 const LAPS_TOTAL = 5;
 const FINISH_MIN_FORWARD = 40;
+
+const DIFFICULTY_PRESETS = {
+  EASY: {
+    trafficCount: 140,
+    minSpeed: 140,
+    maxSpeed: 260,
+    minSpacing: 220,
+  },
+  MEDIUM: {
+    trafficCount: 200,
+    minSpeed: 160,
+    maxSpeed: 320,
+    minSpacing: 170,
+  },
+  HARD: {
+    trafficCount: 260,
+    minSpeed: 200,
+    maxSpeed: 360,
+    minSpacing: 140,
+  },
+};
 
 const app = document.getElementById("app");
 const canvas = document.createElement("canvas");
@@ -246,6 +281,11 @@ const state = {
   fpsLastTime: performance.now(),
   padsDrawnThisFrame: 0,
 };
+
+let gameState = GAME_STATE.START_SCREEN;
+let selectedDifficultyKey = "MEDIUM";
+const startScreenState = createStartScreenState();
+const audioManager = createAudioManager();
 
 const car = {
   position: createVec2(0, 0),
@@ -346,9 +386,58 @@ resizeCanvas();
 bestRunState.bestScore = loadStoredBestScore();
 bestRunState.bestTime = loadStoredBestTime();
 
+function applyDifficultyPreset(presetKey) {
+  const preset = DIFFICULTY_PRESETS[presetKey] || DIFFICULTY_PRESETS.MEDIUM;
+  trafficState.system = createTrafficSystem(track, 77123, preset);
+  trafficState.carSprites = trafficState.system.cars.map(
+    (carEntity) => ["npcSedan", "npcCoupe", "npcMuscle", "npcTaxi", "npcBike"][carEntity.id % 5],
+  );
+}
+
+function startRaceWithDifficulty(presetKey) {
+  selectedDifficultyKey = presetKey || selectedDifficultyKey;
+  applyDifficultyPreset(selectedDifficultyKey);
+  resetToStart();
+  raceState.phase = RACE_PHASE.PRE_RACE;
+  raceState.countdownStartTime = null;
+  gameState = GAME_STATE.COUNTDOWN;
+  audioManager.playGameplay();
+}
+
+function returnToStartScreen() {
+  gameState = GAME_STATE.START_SCREEN;
+  resetToStart();
+  resetStartScreenState(startScreenState);
+  audioManager.playMenu();
+}
+
+function syncGameStateFromRacePhase() {
+  if (raceState.phase === RACE_PHASE.RACING) {
+    gameState = GAME_STATE.RACING;
+  } else if (raceState.phase === RACE_PHASE.FINISHED) {
+    gameState = GAME_STATE.FINISHED;
+  } else {
+    gameState = GAME_STATE.COUNTDOWN;
+  }
+}
+
 function updateFixed() {
   const dt = FIXED_TIME_STEP / 1000;
   const now = performance.now();
+  if (gameState === GAME_STATE.START_SCREEN) {
+    const menuInput = getMenuInput();
+    const { startRequested, selectionIndex } = updateStartScreenState(
+      startScreenState,
+      dt,
+      menuInput,
+    );
+    selectedDifficultyKey = START_MENU_ITEMS[selectionIndex] || selectedDifficultyKey;
+    if (startRequested) {
+      startRaceWithDifficulty(selectedDifficultyKey);
+    }
+    audioManager.update(dt);
+    return;
+  }
   raceState.boostUpdateThisFrame = false;
   raceState.boostAppliedThisFrame = false;
   if (raceState.notifications.length) {
@@ -365,7 +454,8 @@ function updateFixed() {
   camera.prevPosition.y = camera.position.y;
 
   if (wasPressed("KeyR")) {
-    resetToStart();
+    returnToStartScreen();
+    return;
   }
 
   if (wasPressed("KeyC")) {
@@ -461,6 +551,7 @@ function updateFixed() {
   }
 
   updateRacePhase(now);
+  syncGameStateFromRacePhase();
   updateBoostState(dt);
   updateCarPhysics(dt, raceState.phase !== RACE_PHASE.RACING);
   updateSkylineState(dt);
@@ -553,6 +644,7 @@ function updateFixed() {
       impact ? impact.strength : 0,
     );
   }
+  audioManager.update(dt);
   const cameraFollow = 1 - Math.exp(-5 * dt);
   camera.position.x = lerp(camera.position.x, car.position.x, cameraFollow);
   camera.position.y = lerp(camera.position.y, car.position.y, cameraFollow);
@@ -561,6 +653,10 @@ function updateFixed() {
 
 function render(alpha) {
   state.padsDrawnThisFrame = 0;
+  if (gameState === GAME_STATE.START_SCREEN) {
+    renderStartScreen(context, startScreenState, state.width, state.height);
+    return;
+  }
   if (settings.showMotionBlur) {
     context.save();
     context.fillStyle = "rgba(5, 6, 11, 0.16)";
@@ -2621,9 +2717,11 @@ async function loadGameAssets() {
     open24h: "assets/open_24h_retro_sign.png",
     artDecoHotel: "assets/art_deco_hotel_sign.png",
     neonSkull: "assets/neon_skull.png",
+    startScreen: "assets/start_screen/start_screen.png",
   };
 
   assets = await loadAssets(manifest);
+  setStartScreenBackground(startScreenState, assets.startScreen);
   asphaltPattern = context.createPattern(assets.asphalt, "repeat");
   asphaltPatternScale = ROAD_PATTERN_SCALE;
   if (asphaltPattern && asphaltPattern.setTransform) {
@@ -2643,6 +2741,7 @@ async function loadGameAssets() {
     (car) => ["npcSedan", "npcCoupe", "npcMuscle", "npcTaxi", "npcBike"][car.id % 5],
   );
   resetToStart();
+  audioManager.playMenu();
 }
 
 drawLoadingScreen("Loading assets...");

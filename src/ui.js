@@ -550,3 +550,220 @@ function drawPanel(ctx, x, y, lines, opts) {
   ctx.restore();
   return { x: panelX, y: panelY, width: panelWidth, height: panelHeight };
 }
+
+export const START_MENU_ITEMS = ["EASY", "MEDIUM", "HARD"];
+
+export function createStartScreenState() {
+  return {
+    selectionIndex: 1,
+    confirmFlash: 0,
+    fadeProgress: 0,
+    fadeDuration: 0.6,
+    isConfirming: false,
+    time: 0,
+    background: null,
+  };
+}
+
+export function resetStartScreenState(state) {
+  state.selectionIndex = 1;
+  state.confirmFlash = 0;
+  state.fadeProgress = 0;
+  state.isConfirming = false;
+  state.time = 0;
+}
+
+export function setStartScreenBackground(state, image) {
+  state.background = image;
+}
+
+export function updateStartScreenState(state, dt, input) {
+  state.time += dt;
+  if (!state.isConfirming) {
+    if (input?.move) {
+      const count = START_MENU_ITEMS.length;
+      const next = (state.selectionIndex + input.move + count) % count;
+      state.selectionIndex = next;
+    }
+    if (input?.confirm) {
+      state.isConfirming = true;
+      state.confirmFlash = 0.22;
+      state.fadeProgress = 0;
+    }
+  } else {
+    state.fadeProgress = Math.min(1, state.fadeProgress + dt / state.fadeDuration);
+    state.confirmFlash = Math.max(0, state.confirmFlash - dt);
+  }
+
+  const startRequested = state.isConfirming && state.fadeProgress >= 1;
+  return {
+    startRequested,
+    selectionIndex: state.selectionIndex,
+  };
+}
+
+export function renderStartScreen(ctx, state, screenWidth, screenHeight) {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, screenWidth, screenHeight);
+  ctx.fillStyle = "#05060b";
+  ctx.fillRect(0, 0, screenWidth, screenHeight);
+
+  const t = state.time;
+  const zoom = 1.01 + 0.01 * Math.sin(t * 0.18);
+  const driftX = Math.sin(t * 0.12) * 6;
+  const driftY = Math.cos(t * 0.1) * 5;
+  drawStartBackground(ctx, state.background, screenWidth, screenHeight, zoom, driftX, driftY);
+  drawScanlineShimmer(ctx, screenWidth, screenHeight, t);
+
+  drawNeonTitle(ctx, screenWidth, screenHeight, t);
+  drawDifficultyMenu(ctx, screenWidth, screenHeight, t, state.selectionIndex);
+  drawHintText(ctx, screenWidth, screenHeight, t);
+
+  if (state.confirmFlash > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.6, state.confirmFlash * 2.4);
+    ctx.fillStyle = "rgba(210, 255, 255, 1)";
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
+    ctx.restore();
+  }
+
+  if (state.fadeProgress > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.95, state.fadeProgress);
+    ctx.fillStyle = "#05060b";
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+function drawStartBackground(ctx, image, screenWidth, screenHeight, scale, offsetX, offsetY) {
+  if (!image) {
+    return;
+  }
+  const canvasRatio = screenWidth / screenHeight;
+  const imageRatio = image.width / image.height;
+  let drawW = screenWidth;
+  let drawH = screenHeight;
+  if (imageRatio > canvasRatio) {
+    drawH = screenHeight;
+    drawW = screenHeight * imageRatio;
+  } else {
+    drawW = screenWidth;
+    drawH = screenWidth / imageRatio;
+  }
+  drawW *= scale;
+  drawH *= scale;
+  const x = (screenWidth - drawW) / 2 + offsetX;
+  const y = (screenHeight - drawH) / 2 + offsetY;
+  ctx.drawImage(image, x, y, drawW, drawH);
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = "rgba(6, 8, 18, 0.6)";
+  ctx.fillRect(0, 0, screenWidth, screenHeight);
+  ctx.restore();
+}
+
+function drawNeonTitle(ctx, screenWidth, screenHeight, t) {
+  const text = "NEON DRIFT RACER";
+  const fontSize = Math.min(96, screenWidth * 0.12);
+  const x = screenWidth / 2;
+  const y = screenHeight * 0.28;
+  const pulse = 0.6 + 0.4 * Math.sin(t * 0.8);
+  const flickerSeed = Math.sin(t * 9.7) * Math.sin(t * 1.3);
+  let flicker = 1;
+  if (flickerSeed > 0.95) {
+    flicker -= 0.25;
+  } else if (flickerSeed < -0.97) {
+    flicker -= 0.15;
+  }
+  const brightness = Math.max(0.6, pulse * flicker);
+  const aberration = 1.2 + 0.5 * Math.sin(t * 0.4);
+
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `700 ${fontSize}px 'Orbitron', 'Segoe UI', system-ui, sans-serif`;
+
+  ctx.globalAlpha = 0.18 * brightness;
+  ctx.fillStyle = "rgb(255, 120, 200)";
+  ctx.fillText(text, x - aberration, y);
+  ctx.fillStyle = "rgb(90, 200, 255)";
+  ctx.fillText(text, x + aberration, y + 0.4);
+  ctx.fillStyle = "rgb(140, 255, 210)";
+  ctx.fillText(text, x, y + aberration * 0.5);
+
+  ctx.globalAlpha = 0.85 * brightness;
+  ctx.shadowColor = "rgba(110, 255, 230, 0.8)";
+  ctx.shadowBlur = 32 * brightness;
+  ctx.fillStyle = "rgba(150, 255, 235, 0.85)";
+  ctx.fillText(text, x, y);
+
+  ctx.shadowColor = "rgba(90, 180, 255, 0.5)";
+  ctx.shadowBlur = 14 * brightness;
+  ctx.fillStyle = "rgba(240, 250, 255, 0.95)";
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function drawDifficultyMenu(ctx, screenWidth, screenHeight, t, selectionIndex) {
+  const centerX = screenWidth / 2;
+  const baseY = screenHeight * 0.54;
+  const spacing = Math.min(52, screenHeight * 0.08);
+  const baseSize = Math.min(34, screenWidth * 0.045);
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i < START_MENU_ITEMS.length; i += 1) {
+    const label = START_MENU_ITEMS[i];
+    const isSelected = i === selectionIndex;
+    const lift = isSelected ? -2 : 0;
+    const scale = isSelected ? 1.06 : 1;
+    const glow = isSelected ? 22 : 10;
+    const pulse = isSelected ? 0.85 + 0.15 * Math.sin(t * 2.2) : 0.75;
+    ctx.save();
+    ctx.translate(centerX, baseY + i * spacing + lift);
+    ctx.scale(scale, scale);
+    ctx.font = `600 ${baseSize}px 'Orbitron', 'Segoe UI', system-ui, sans-serif`;
+    ctx.shadowBlur = glow;
+    ctx.shadowColor = isSelected
+      ? "rgba(255, 140, 240, 0.65)"
+      : "rgba(120, 240, 255, 0.45)";
+    ctx.fillStyle = isSelected
+      ? `rgba(240, 210, 255, ${pulse})`
+      : "rgba(200, 225, 245, 0.85)";
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawHintText(ctx, screenWidth, screenHeight, t) {
+  const alpha = 0.35 + 0.35 * (0.5 + 0.5 * Math.sin(t * 1.6));
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "16px 'Orbitron', 'Segoe UI', system-ui, sans-serif";
+  ctx.fillStyle = `rgba(180, 210, 235, ${alpha})`;
+  ctx.fillText("PRESS ENTER", screenWidth / 2, screenHeight * 0.73);
+  ctx.restore();
+}
+
+function drawScanlineShimmer(ctx, screenWidth, screenHeight, t) {
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  ctx.fillStyle = "rgba(120, 220, 255, 0.12)";
+  const bandHeight = Math.max(10, screenHeight * 0.015);
+  const bandY = (t * 28) % (screenHeight + bandHeight) - bandHeight;
+  ctx.fillRect(0, bandY, screenWidth, bandHeight);
+  ctx.globalAlpha = 0.04;
+  for (let y = 0; y < screenHeight; y += 6) {
+    const shimmer = 0.02 + 0.02 * Math.sin(t * 2.1 + y * 0.12);
+    ctx.fillStyle = `rgba(120, 220, 255, ${shimmer})`;
+    ctx.fillRect(0, y, screenWidth, 1);
+  }
+  ctx.restore();
+}

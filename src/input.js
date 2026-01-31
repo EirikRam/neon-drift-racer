@@ -9,6 +9,7 @@ const SUPPORTED_KEYS = new Set([
   "ArrowRight",
   "Space",
   "Shift",
+  "Enter",
   "KeyR",
   "KeyC",
   "KeyP",
@@ -101,4 +102,17 @@ export function wasReleased(key) {
 export function endFrame() {
   pressed.clear();
   released.clear();
+}
+
+export function getMenuInput() {
+  const moveUp = wasPressed("ArrowUp") || wasPressed("KeyW");
+  const moveDown = wasPressed("ArrowDown") || wasPressed("KeyS");
+  const confirm = wasPressed("Enter");
+  let move = 0;
+  if (moveUp && !moveDown) {
+    move = -1;
+  } else if (moveDown && !moveUp) {
+    move = 1;
+  }
+  return { move, confirm };
 }
