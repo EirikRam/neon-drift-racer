@@ -3,18 +3,25 @@
 
 Neon Drift Racer is a browser-based, neon-styled arcade racer focused on high-speed drifting, precision timing, and dense traffic navigation. It blends responsive drift physics, boost pad bursts, and a score-driven loop into a compact, replayable experience.
 
+This project intentionally uses deterministic, rule-based AI rather than machine learning to emphasize system clarity, debuggability, and architectural control. The traffic and decision systems are designed as a foundation that could later support learning-based approaches without refactoring the core simulation loop.
+
 ## Gameplay Screenshots
 ![Traffic and drift effects](assets/screenshots/gameplay_screenshot_0.png)
 ![Boost pads and neon props](assets/screenshots/gameplay_screenshot_1.png)
 
 Screens show the traffic system, neon environments, boost pad layout, and HUD-driven scoring.
 
+## AI & Decision Systems Design
+NPC traffic operates as rule-based autonomous agents constrained by lane geometry, spacing, and safety checks. Decisions are driven by deterministic logic: lane center targets, speed adjustments based on local spacing, collision response, and difficulty-dependent spawn density and velocity ranges. This makes the simulation reproducible and debuggable, which is critical for tuning real-time behavior and validating changes.
+
+This is not a machine learning demo. The autonomy layer is intentionally deterministic to keep the simulation loop transparent and stable under load. The architecture isolates agent updates and track sampling, which allows future ML or RL controllers to replace or augment the agent policy without refactoring the physics loop, renderer, or state machine.
+
 ## High-Level Overview
 Neon Drift Racer is a single-track arcade racer with an emphasis on tight control response, drift scoring, and readable visual feedback. The design goals are an immediate arcade feel, consistent high-speed handling, and replayability through score chasing and difficulty presets. The core loop is complete, with modular systems for traffic, boost pads, track generation, audio, UI, and scoring that support future expansion.
 
 ## Gameplay Features
 - **Driving & drift physics:** Acceleration, braking, grip vs. drift damping, handbrake drift, and off-road penalties.
-- **Traffic AI:** Lane-based NPC traffic with spacing control, near-miss detection, and collision response.
+- **Rule-based autonomous traffic:** Constraint-driven agent behavior with lane keeping, spacing control, near-miss detection, and collision response.
 - **Boost pads:** Track-placed boost pads that trigger bursts, bonus trail effects, and drift score bonuses.
 - **Lap system:** Multi-lap race flow with finish gate detection and split timing.
 - **Countdown and race flow:** Pre-race delay, 3-2-1 countdown, and go flash transitions.
@@ -95,7 +102,7 @@ flowchart TD
 - `src/assets.js`: Asset loader for sprites and skyline images.
 - `src/input.js`: Keyboard input state, pressed/released tracking, menu input.
 - `src/track.js`: Procedural track generation, checkpoints, districts, progress.
-- `src/traffic.js`: NPC traffic spawn, lane logic, spacing, and updates.
+- `src/traffic.js`: Rule-based traffic agent spawn, lane logic, spacing, and updates.
 - `src/boostpads.js`: Boost pad placement and trigger logic.
 - `src/score.js`: Drift scoring, multipliers, near-miss bonuses.
 - `src/ui.js`: HUD, overlays, finish panel, start screen rendering.
@@ -109,7 +116,7 @@ flowchart TD
 
 ## Extensibility & Future Work
 - Add multiple track profiles by introducing additional track generators in `src/track.js`.
-- Extend AI behavior in `src/traffic.js` (lane changes, overtakes, variable aggression).
+- Extend agent behavior in `src/traffic.js` (lane changes, overtakes, variable aggression).
 - Introduce new gameplay modifiers in `src/score.js` (combo events, risk/reward bonuses).
 - Add visual effects passes in `src/main.js` (screen-space bloom, color grading).
 - Expand the start screen flow in `src/ui.js` (track selection, accessibility settings).
