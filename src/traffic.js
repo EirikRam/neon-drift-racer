@@ -11,8 +11,8 @@ const DEFAULT_SETTINGS = {
   speedFollow: 2.8,
   laneCount: 2,
   shoulderFactor: 0.12,
-  laneJitterFactor: 0.05,
-  laneKeepKp: 8.0,
+  laneJitterFactor: 0,
+  laneKeepKp: 9.6,
   laneKeepMax: 120.0,
   spawnJitter: 0.35,
   spawnAttempts: 30,
@@ -108,6 +108,19 @@ function getLaneConfig(trackWidth, settings) {
   };
 }
 
+function nearestLaneIndex(laneCenters, offset) {
+  let bestIndex = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < laneCenters.length; i += 1) {
+    const dist = Math.abs(laneCenters[i] - offset);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
 export function createTrafficSystem(track, seed = 424242, overrides = {}) {
   const settings = { ...DEFAULT_SETTINGS, ...overrides };
   const rng = mulberry32(seed);
@@ -166,9 +179,8 @@ export function createTrafficSystem(track, seed = 424242, overrides = {}) {
         progress += 1;
       }
       const laneIndex = (i + attempt) % laneCenters.length;
-      const laneJitter = (rng() * 2 - 1) * laneW * settings.laneJitterFactor;
-      let desiredOffset = laneCenters[laneIndex] + laneJitter;
-      desiredOffset = clampLaneOffset(desiredOffset, laneMax);
+      const laneJitter = 0;
+      const desiredOffset = laneCenters[laneIndex];
       if (
         trySpawnCar(
           i,
@@ -200,9 +212,8 @@ export function createTrafficSystem(track, seed = 424242, overrides = {}) {
       }
       let progress = rng();
       const laneIndex = attempt % laneCenters.length;
-      const laneJitter = (rng() * 2 - 1) * laneW * settings.laneJitterFactor;
-      let desiredOffset = laneCenters[laneIndex] + laneJitter;
-      desiredOffset = clampLaneOffset(desiredOffset, laneMax);
+    const laneJitter = 0;
+    const desiredOffset = laneCenters[laneIndex];
       if (
         trySpawnCar(
           cars.length,
@@ -242,9 +253,8 @@ export function createTrafficSystem(track, seed = 424242, overrides = {}) {
       continue;
     }
     const laneIndex = bubbleTries % laneCenters.length;
-    const laneJitter = (rng() * 2 - 1) * laneW * settings.laneJitterFactor;
-    let desiredOffset = laneCenters[laneIndex] + laneJitter;
-    desiredOffset = clampLaneOffset(desiredOffset, laneMax);
+    const laneJitter = 0;
+    const desiredOffset = laneCenters[laneIndex];
     if (
       trySpawnCar(
         cars.length,
@@ -307,8 +317,15 @@ export function createTrafficSystem(track, seed = 424242, overrides = {}) {
         const relX = car.pos.x - sample.point.x;
         const relY = car.pos.y - sample.point.y;
         const currentOffset = relX * normal.x + relY * normal.y;
-        const desiredOffset = clampLaneOffset(car.desiredOffset, laneMax);
-        const laneError = desiredOffset - currentOffset;
+        let desiredOffset = laneCenters[car.laneIndex];
+        let laneError = desiredOffset - currentOffset;
+        const snapThreshold = laneW * 0.35;
+        if (Math.abs(laneError) > snapThreshold) {
+          car.laneIndex = nearestLaneIndex(laneCenters, currentOffset);
+          desiredOffset = laneCenters[car.laneIndex];
+          car.desiredOffset = desiredOffset;
+          laneError = desiredOffset - currentOffset;
+        }
         const desiredLatVel = clamp(
           laneError * settings.laneKeepKp,
           -settings.laneKeepMax,
@@ -367,6 +384,9 @@ export function createTrafficSystem(track, seed = 424242, overrides = {}) {
         currentOffset: npc.currentOffset,
         desiredOffset: npc.desiredOffset,
         laneError: npc.laneError,
+        betweenLanes:
+          Math.abs(npc.laneError) < laneW * 0.5 &&
+          Math.abs(npc.laneError) > laneW * 0.1,
       }));
     },
   };
