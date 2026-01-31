@@ -1,4 +1,10 @@
-import { isDown, wasPressed, endFrame, getMenuInput } from "./input.js";
+import {
+  isDown,
+  wasPressed,
+  endFrame,
+  getMenuInput,
+  setFirstGestureHandler,
+} from "./input.js";
 import { createVec2, clamp, lerp } from "./math.js";
 import { ParticlePool } from "./particles.js";
 import { track, getSkylineKeyForDistrictId } from "./track.js";
@@ -287,6 +293,11 @@ let selectedDifficultyKey = "MEDIUM";
 const startScreenState = createStartScreenState();
 const audioManager = createAudioManager();
 
+setFirstGestureHandler(() => {
+  audioManager.unlockFromGesture();
+  audioManager.tryStartPending();
+});
+
 const car = {
   position: createVec2(0, 0),
   prevPosition: createVec2(0, 0),
@@ -401,14 +412,14 @@ function startRaceWithDifficulty(presetKey) {
   raceState.phase = RACE_PHASE.PRE_RACE;
   raceState.countdownStartTime = null;
   gameState = GAME_STATE.COUNTDOWN;
-  audioManager.playGameplay();
+  audioManager.crossfadeTo("gameplay", 0.6);
 }
 
 function returnToStartScreen() {
   gameState = GAME_STATE.START_SCREEN;
   resetToStart();
   resetStartScreenState(startScreenState);
-  audioManager.playMenu();
+  audioManager.crossfadeTo("menu", 0.6);
 }
 
 function syncGameStateFromRacePhase() {
@@ -2741,7 +2752,7 @@ async function loadGameAssets() {
     (car) => ["npcSedan", "npcCoupe", "npcMuscle", "npcTaxi", "npcBike"][car.id % 5],
   );
   resetToStart();
-  audioManager.playMenu();
+  audioManager.requestMenu();
 }
 
 drawLoadingScreen("Loading assets...");
