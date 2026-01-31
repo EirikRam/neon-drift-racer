@@ -31,6 +31,18 @@ const SUPPORTED_KEYS = new Set([
 const down = new Set();
 const pressed = new Set();
 const released = new Set();
+let firstGestureFired = false;
+let firstGestureHandler = null;
+
+function fireFirstGesture() {
+  if (firstGestureFired) {
+    return;
+  }
+  firstGestureFired = true;
+  if (typeof firstGestureHandler === "function") {
+    firstGestureHandler();
+  }
+}
 
 function normalizeKey(code) {
   if (code === "ShiftLeft" || code === "ShiftRight") {
@@ -45,6 +57,7 @@ function normalizeKey(code) {
 }
 
 function handleKeyDown(event) {
+  fireFirstGesture();
   const key = normalizeKey(event.code);
   if (!key) {
     return;
@@ -80,9 +93,18 @@ function handleBlur() {
   released.clear();
 }
 
+function handlePointerDown() {
+  fireFirstGesture();
+}
+
 window.addEventListener("keydown", handleKeyDown);
 window.addEventListener("keyup", handleKeyUp);
 window.addEventListener("blur", handleBlur);
+window.addEventListener("pointerdown", handlePointerDown, { passive: true });
+
+export function setFirstGestureHandler(handler) {
+  firstGestureHandler = handler;
+}
 
 export function isDown(key) {
   const normalized = normalizeKey(key) ?? key;
