@@ -1,5 +1,5 @@
 # Neon Drift Racer
-![Neon Drift Racer](./github_logo.png)
+![Neon Drift Racer](assets/start_screen/github_logo.png)
 
 Neon Drift Racer is a browser-based, neon-styled arcade racer focused on high-speed drifting, precision timing, and dense traffic navigation. It blends responsive drift physics, boost pad bursts, and a score-driven loop into a compact, replayable experience.
 
