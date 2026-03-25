@@ -10,8 +10,8 @@ function createTrack(src) {
 }
 
 export function createAudioManager() {
-  const menuTrack = createTrack("assets/music/midnight_turbo_run.wav");
-  const gameplayTrack = createTrack("assets/music/midnight_apex_run.wav");
+  const menuTrack = createTrack("assets/music/midnight_turbo_run.mp3");
+  const gameplayTrack = createTrack("assets/music/midnight_apex_run.mp3");
   let isUnlocked = false;
   let pendingTrack = null;
   let currentTrack = null;

@@ -1,0 +1,13 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.cursor/
+
+# Logs
+*.log
+
+# Build artifacts (future-proofing)
+dist/
